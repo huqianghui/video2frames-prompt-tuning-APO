@@ -79,14 +79,21 @@ variables must be added to the `.env` (or exported):
 # 4. Smoke-test the APO loop end to end (minimal beam, cheap).
 .venv/bin/python apo_train.py --smoke
 
-# 5. Full APO run. Best prompt lands in results/best_prompt.txt, and a full
+# 5. Full APO run. Best prompt lands in results/best_prompt.txt, a full
 #    optimization report (per-round candidate prompts, rewards, gradient
-#    critiques, validation scores) in results/report.md + results/report.json.
+#    critiques, validation scores) in results/report.md + results/report.json,
+#    and a compact prompt version tree (derivation, scores, winner) in
+#    results/tree.md.
 .venv/bin/python apo_train.py
 
 # 5b. (Optional) Re-generate the report from an existing log/apo.log, e.g. for
 #     an earlier run in the same log file.
 .venv/bin/python generate_report.py --run -1
+
+# 5c. (Optional) Build only the version tree from an existing report.md — no
+#     log needed (e.g. a report.md copied from another machine). Beam-survival
+#     markers are unavailable in this mode.
+.venv/bin/python generate_report.py --from-report results/report.md
 
 # 6. Compare baseline vs tuned prompt on the held-out test split.
 .venv/bin/python evaluate.py --name baseline
@@ -223,7 +230,7 @@ Online (requires blob access + Azure OpenAI):
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
 | `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
 | `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | Project-specific APO meta-prompts encoding the reward structure and the frame-placeholder contract. |
-| `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round). |
+| `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round) and `results/tree.md` (compact version tree: derivation, scores, beam survival, winner). |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |

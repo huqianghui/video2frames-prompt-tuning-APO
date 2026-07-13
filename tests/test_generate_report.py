@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from generate_report import build_run_reports, generate_report, parse_records
+from generate_report import build_run_reports, generate_report, generate_tree_from_report, parse_records
 
 LOGGER_NAME = "agentlightning.algorithm.apo.apo"
 
@@ -37,7 +37,8 @@ def make_log(tmp_path: Path) -> Path:
         'analyzer..." on 2 tasks in val mode',
         line("10:00:12,000", "222", "Round 01 | Prompt v1", "Evaluated 2 rollouts. Statuses: Counter({'succeeded': 2}). Rewards: [0.9, 0.7], average is 0.8"),
         line("10:00:13,000", "222", "Round 01 | Prompt v1", "Candidate score: 0.800"),
-        line("10:00:14,000", "222", "Round 01 | Prompt v1", "Best prompt updated. New best score: 0.800 (prev: 0.370)"),
+        line("10:00:14,000", "222", "Round 01", "Top 2 candidates on validation dataset: ['v1:0.800', 'v0:0.370']"),
+        line("10:00:15,000", "222", "Round 01 | Prompt v1", "Best prompt updated. New best score: 0.800 (prev: 0.370)"),
     ]
     path = tmp_path / "apo.log"
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
@@ -46,7 +47,7 @@ def make_log(tmp_path: Path) -> Path:
 
 def test_parse_records_folds_continuations_and_prefixes(tmp_path: Path) -> None:
     records = parse_records(make_log(tmp_path))
-    assert len(records) == 17  # continuation lines folded, not separate records
+    assert len(records) == 18  # continuation lines folded, not separate records
     gradient = next(r for r in records if "Gradient computed" in r.message)
     assert "- Point two" in gradient.message
     assert gradient.round_num == 1
@@ -77,6 +78,7 @@ def test_build_run_reports_extracts_run_structure(tmp_path: Path) -> None:
     assert run.best_updated is True
     assert run.best_version == "v1"
     assert run.best_score == 0.8
+    assert run.beam_history == {1: ["v1", "v0"]}
 
 
 def test_generate_report_writes_markdown_and_json(tmp_path: Path) -> None:
@@ -91,7 +93,29 @@ def test_generate_report_writes_markdown_and_json(tmp_path: Path) -> None:
     data = json.loads((tmp_path / "results" / "report.json").read_text(encoding="utf-8"))
     assert data["pid"] == "222"
     assert data["candidates"]["v1"]["val_score"] == 0.8
+    assert data["beam_history"] == {"1": ["v1", "v0"]}
+
+    tree = (tmp_path / "results" / "tree.md").read_text(encoding="utf-8")
+    assert "v0 (seed) | val 0.37 | beam R1" in tree
+    assert "└── v1 (R1) | val 0.8 | beam R1 | * BEST 0.8" in tree
+    assert "You are an improved analyzer." not in tree  # no prompt texts in the tree view
 
 
 def test_generate_report_missing_log_returns_none(tmp_path: Path) -> None:
     assert generate_report(log_path=tmp_path / "missing.log", output_dir=tmp_path / "results") is None
+
+
+def test_generate_tree_from_report(tmp_path: Path) -> None:
+    generate_report(log_path=make_log(tmp_path), output_dir=tmp_path / "results")
+    report_md = tmp_path / "results" / "report.md"
+    tree_md = generate_tree_from_report(report_md)
+    assert tree_md == tmp_path / "results" / "tree.md"  # defaults to the report's directory
+    tree = tree_md.read_text(encoding="utf-8")
+    assert "v0 (seed) | val 0.37" in tree
+    assert "└── v1 (R1) | val 0.8 | * BEST 0.8" in tree  # no beam markers in this mode
+    assert "beam R1" not in tree
+    assert str(report_md) in tree  # source points at the report, not the log
+
+
+def test_generate_tree_from_report_missing_file_returns_none(tmp_path: Path) -> None:
+    assert generate_tree_from_report(tmp_path / "missing.md", output_dir=tmp_path / "results") is None

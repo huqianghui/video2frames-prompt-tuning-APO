@@ -8,12 +8,16 @@ validation scores) lives in the log file written by `setup_apo_logger` in
 - `results/report.md` — per-round candidates with parent, train-batch rewards,
   gradient critique, validation score, and the full prompt text.
 - `results/report.json` — the same data in structured form.
+- `results/tree.md` — a compact version tree: which prompt was derived from
+  which, validation scores, beam survival per round, and the winning version
+  (no prompt texts or critiques).
 
 The log may contain several runs (one per process); by default the last run is
 reported.
 
 Usage:
     python generate_report.py [--log log/apo.log] [--output-dir results] [--run -1]
+    python generate_report.py --from-report results/report.md   # tree.md only, no log needed
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ class RunReport:
     best_updated: bool = False
     candidates: Dict[str, Candidate] = field(default_factory=dict)
     rounds: List[int] = field(default_factory=list)
+    beam_history: Dict[int, List[str]] = field(default_factory=dict)
 
 
 def parse_records(log_path: Path) -> List[LogRecord]:
@@ -154,6 +159,8 @@ def build_run_reports(records: List[LogRecord]) -> List[RunReport]:
                 candidate.val_rewards = rewards
         elif "Candidate score:" in message and version is not None:
             run.candidates[version].val_score = float(message.rsplit(":", 1)[1].strip())
+        elif "candidates on validation dataset:" in message and record.round_num is not None:
+            run.beam_history[record.round_num] = re.findall(r"v\d+", message)
         elif "Gradient computed" in message and "has result:" in message and version is not None:
             run.candidates[version].gradient = message.split("has result:", 1)[1].strip()
         elif re.match(r"New prompt template created from parent (v\d+): (v\d+)$", message):
@@ -208,6 +215,91 @@ def render_markdown(run: RunReport, log_path: Path) -> str:
     return "\n".join(lines)
 
 
+def parse_report_markdown(report_path: Path) -> RunReport:
+    """Rebuild the run structure from an existing `report.md` (no log needed).
+
+    `report.md` does not record beam selections, so `beam_history` stays empty
+    and the resulting tree carries no `beam RN` markers.
+    """
+    text = report_path.read_text(encoding="utf-8")
+    run = RunReport(pid="?", started="?", finished="?")
+    header = re.search(r"- Log: `[^`]*` \(process (?P<pid>\d+), (?P<started>.+?) → (?P<finished>.+?)\)", text)
+    if header:
+        run.pid, run.started, run.finished = header.group("pid", "started", "finished")
+    baseline = re.search(r"baseline score on val: \*\*(?P<score>[\d.eE+-]+)\*\*", text)
+    if baseline:
+        run.baseline_score = float(baseline.group("score"))
+    best = re.search(r"- Best prompt: \*\*(?P<version>v\d+)\*\* with score \*\*(?P<score>[\d.eE+-]+)\*\*(?P<rest>.*)", text)
+    if best:
+        run.best_version = best.group("version")
+        run.best_score = float(best.group("score"))
+        run.best_updated = "never beaten" not in best.group("rest")
+    for section in re.split(r"^## ", text, flags=re.MULTILINE)[1:]:
+        heading, _, body = section.partition("\n")
+        head_match = re.match(r"Prompt (?P<version>v\d+)(?: \(from (?P<parent>v\d+)\))?", heading)
+        if head_match is None:
+            continue
+        candidate = Candidate(version=head_match.group("version"), parent=head_match.group("parent"))
+        round_match = re.search(r"^- Round: (\d+)", body, re.MULTILINE)
+        if round_match:
+            candidate.round_num = int(round_match.group(1))
+        val_match = re.search(r"^- Validation score: \*\*(?P<score>[\d.eE+-]+)\*\*", body, re.MULTILINE)
+        if val_match:
+            candidate.val_score = float(val_match.group("score"))
+        run.candidates[candidate.version] = candidate
+    return run
+
+
+def render_tree(run: RunReport, source_path: Path) -> str:
+    """Render a compact derivation tree of prompt versions (no prompt texts)."""
+    children: Dict[Optional[str], List[Candidate]] = {}
+    for candidate in sorted(run.candidates.values(), key=lambda c: int(c.version[1:])):
+        children.setdefault(candidate.parent, []).append(candidate)
+
+    def label(candidate: Candidate) -> str:
+        parts = [f"{candidate.version} (seed)" if candidate.parent is None else f"{candidate.version} (R{candidate.round_num})"]
+        if candidate.val_score is not None:
+            parts.append(f"val {candidate.val_score}")
+        beam_rounds = [r for r in sorted(run.beam_history) if candidate.version in run.beam_history[r]]
+        if beam_rounds:
+            parts.append("beam " + ",".join(f"R{r}" for r in beam_rounds))
+        if candidate.version == run.best_version:
+            parts.append(f"* BEST {run.best_score}")
+        return " | ".join(parts)
+
+    tree_lines: List[str] = []
+
+    def walk(version: str, prefix: str) -> None:
+        kids = children.get(version, [])
+        for i, child in enumerate(kids):
+            last = i == len(kids) - 1
+            tree_lines.append(prefix + ("└── " if last else "├── ") + label(child))
+            walk(child.version, prefix + ("    " if last else "│   "))
+
+    for root in children.get(None, []):
+        tree_lines.append(label(root))
+        walk(root.version, "")
+
+    lines = [
+        "# APO Prompt Version Tree",
+        "",
+        f"- Source: `{source_path}` (process {run.pid}, {run.started} → {run.finished})",
+        f"- Seed prompt (v0) baseline score on val: **{run.baseline_score}**",
+        f"- Best prompt: **{run.best_version}** with score **{run.best_score}**"
+        + ("" if run.best_updated else " (seed prompt was never beaten)"),
+        "",
+        "```",
+        *tree_lines,
+        "```",
+        "",
+        "Legend: `(RN)` created in round N · `val` last validation score on the val split ·",
+        "`beam RN` survived round-N selection · `* BEST` final history-best score",
+        "(re-evaluated on the full val split, which is why it can differ slightly from `val`).",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def run_to_dict(run: RunReport) -> Dict[str, Any]:
     return {
         "pid": run.pid,
@@ -217,6 +309,7 @@ def run_to_dict(run: RunReport) -> Dict[str, Any]:
         "best_version": run.best_version,
         "best_score": run.best_score,
         "best_updated": run.best_updated,
+        "beam_history": run.beam_history,
         "candidates": {
             version: {
                 "parent": c.parent,
@@ -256,18 +349,57 @@ def generate_report(
     (output_dir / "report.json").write_text(
         json.dumps(run_to_dict(run), indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    logger.info("Report for run %s (of %d) written to %s", run.pid, len(runs), report_md)
+    (output_dir / "tree.md").write_text(render_tree(run, log_path), encoding="utf-8")
+    logger.info(
+        "Report for run %s (of %d) written to %s (version tree: %s)", run.pid, len(runs), report_md, output_dir / "tree.md"
+    )
     return report_md
+
+
+def generate_tree_from_report(report_path: Path, output_dir: Optional[Path] = None) -> Optional[Path]:
+    """Write tree.md from an existing report.md, without needing the log.
+
+    The tree is written next to the report unless `output_dir` is given.
+    """
+    if not report_path.exists():
+        logger.warning("Report file %s not found; skipping tree generation.", report_path)
+        return None
+    run = parse_report_markdown(report_path)
+    if not run.candidates:
+        logger.warning("No prompt sections found in %s; skipping tree generation.", report_path)
+        return None
+    if output_dir is None:
+        output_dir = report_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tree_md = output_dir / "tree.md"
+    tree_md.write_text(render_tree(run, report_path), encoding="utf-8")
+    logger.info("Version tree for %s written to %s", report_path, tree_md)
+    return tree_md
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate an APO run report from apo.log.")
     parser.add_argument("--log", type=Path, default=PROJECT_ROOT / "log" / "apo.log")
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "results")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Defaults to results/, or to the report.md directory with --from-report.",
+    )
     parser.add_argument("--run", type=int, default=-1, help="Run index in the log (default: last run).")
+    parser.add_argument(
+        "--from-report",
+        type=Path,
+        metavar="REPORT_MD",
+        help="Build only tree.md from an existing report.md instead of parsing the log "
+        "(beam-survival markers are unavailable in this mode).",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    path = generate_report(args.log, args.output_dir, args.run)
+    if args.from_report is not None:
+        path = generate_tree_from_report(args.from_report, args.output_dir)
+    else:
+        path = generate_report(args.log, args.output_dir or PROJECT_ROOT / "results", args.run)
     if path is not None:
         print(path)
 

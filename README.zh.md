@@ -77,11 +77,16 @@ Blob 存储配置从仓库根目录的 `.env` 读取
 
 # 5. 完整 APO 训练。最佳 prompt 写入 results/best_prompt.txt，完整优化报告
 #    （每轮候选 prompt、reward、gradient 批评、验证分数）写入
-#    results/report.md + results/report.json。
+#    results/report.md + results/report.json，精简的 prompt 版本树
+#    （派生关系、分数、胜出版本）写入 results/tree.md。
 .venv/bin/python apo_train.py
 
 # 5b.（可选）从已有的 log/apo.log 重新生成报告，例如同一日志文件中更早的一次运行。
 .venv/bin/python generate_report.py --run -1
+
+# 5c.（可选）只用已有的 report.md 生成版本树——不需要日志（例如从其他机器
+#     拷贝来的 report.md）。此模式下没有 beam 存活标记。
+.venv/bin/python generate_report.py --from-report results/report.md
 
 # 6. 在 held-out 测试集上对比 baseline 与调优后的 prompt。
 .venv/bin/python evaluate.py --name baseline
@@ -205,7 +210,7 @@ macOS/Windows 的 shm 回退模式下根本没有 dashboard。
 | `frame_agent.py` | `@rollout` 帧分析 agent、帧占位符构建、混合 reward、调试 CLI。 |
 | `apo_train.py` | APO 训练入口；写 `results/best_prompt.txt`、`results/summary.json` 和运行报告。默认使用 `prompts/` 元 prompt（`--default-poml` 回退框架模板）。 |
 | `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | 项目定制的 APO 元 prompt，编码 reward 结构与帧占位符契约。 |
-| `generate_report.py` | 把 `log/apo.log` 解析为 `results/report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）。 |
+| `generate_report.py` | 把 `log/apo.log` 解析为 `results/report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）以及 `results/tree.md`（精简版本树：派生关系、分数、beam 存活、胜出版本）。 |
 | `evaluate.py` | 在指定数据集 split 上评估一个 prompt 文件；写 `results/eval_<name>.json`。 |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | 数据集规模选择指南（噪声/SE 计算）、阶梯式扩容与 beam 超参调优手册（英/中）。 |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |
