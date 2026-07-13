@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 from pathlib import Path
+from typing import Any, Dict
 
 from dotenv import load_dotenv
 from openai import AsyncAzureOpenAI
@@ -62,6 +64,26 @@ def move_agentops_log() -> None:
     logger.info("Moved agentops.log to %s", LOG_DIR / "agentops.log")
 
 
+def execution_strategy(n_runners: int) -> Dict[str, Any]:
+    """Pick the fastest execution strategy the platform supports.
+
+    The default client/server strategy starts runner processes with the platform's
+    default multiprocessing start method and only works when that is `fork` (Linux,
+    Python <= 3.13): `spawn` and `forkserver` cannot pickle the runner closure. On
+    other platforms fall back to single-runner shared-memory mode (the tracer is
+    process-global, so shm cannot run parallel runners either).
+    """
+    start_method = multiprocessing.get_start_method()
+    if start_method == "fork":
+        logger.info("Start method is 'fork': using client/server strategy with %d parallel runners.", n_runners)
+        return {"n_runners": n_runners}
+    logger.warning(
+        "Start method %r cannot pickle the runner entry point; falling back to serial shared-memory mode.",
+        start_method,
+    )
+    return {"strategy": {"type": "shm", "n_runners": 1, "main_thread": "algorithm"}}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run APO on the frame-analysis prompt.")
     parser.add_argument("--beam-rounds", type=int, default=2)
@@ -69,6 +91,7 @@ def main() -> None:
     parser.add_argument("--branch-factor", type=int, default=2)
     parser.add_argument("--gradient-batch-size", type=int, default=4)
     parser.add_argument("--val-batch-size", type=int, default=24)
+    parser.add_argument("--n-runners", type=int, default=4, help="Parallel runners (Linux/fork platforms only).")
     parser.add_argument("--smoke", action="store_true", help="Minimal run to verify the end-to-end loop.")
     args = parser.parse_args()
 
@@ -102,13 +125,9 @@ def main() -> None:
     )
     trainer = Trainer(
         algorithm=algo,
-        # The default client/server strategy spawns runner processes, which fails on
-        # macOS (spawn cannot pickle the runner closure). Shared-memory mode must stay
-        # at a single runner: the tracer registers a process-global active tracer, so
-        # concurrent runner threads would fail every overlapping rollout.
-        strategy={"type": "shm", "n_runners": 1, "main_thread": "algorithm"},
         initial_resources={"prompt_template": prompt_template_baseline()},
         adapter=TraceToMessages(),
+        **execution_strategy(args.n_runners),
     )
 
     # The seed-prompt baseline is always scored on the full val split; shrink the

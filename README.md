@@ -107,9 +107,18 @@ Each rollout is scored with a hybrid reward in `[0, 1]`:
 
 ## Execution Strategy & Platform Notes
 
-`apo_train.py` runs the Trainer with `strategy={"type": "shm", "n_runners": 1, "main_thread": "algorithm"}`
-(single-threaded shared-memory mode). This is deliberate — the current agent-lightning
-runtime has two platform-related limitations:
+`apo_train.py` picks the execution strategy automatically (`execution_strategy()`):
+
+- **Linux with Python ≤ 3.13** (multiprocessing start method `fork`, the primary
+  target platform): the default client/server strategy with parallel runner
+  processes — `--n-runners 4` by default.
+- **macOS / Windows** (start method `spawn`, or `forkserver` on Linux Python 3.14+):
+  falls back to serial shared-memory mode
+  (`strategy={"type": "shm", "n_runners": 1, "main_thread": "algorithm"}`) with a
+  warning — fine for smoke tests and small runs.
+
+The fallback exists because the current agent-lightning runtime has two
+platform-related limitations:
 
 1. **The default client/server strategy fails on macOS and Windows.**
    `ClientServerExecutionStrategy._spawn_runners` (`agentlightning/execution/client_server.py`)
@@ -127,23 +136,13 @@ runtime has two platform-related limitations:
    raises `An active tracer is already set`). With 2+ runner threads, every overlapping
    rollout fails, so `n_runners` must stay at 1.
 
-**Practical consequence:** on macOS/Windows this project runs correctly but serially
-(fine for smoke tests and small runs). For large-scale runs, use **Linux with
-Python ≤ 3.13**, where you can switch to the default client/server strategy with
-parallel runner processes:
-
-```python
-trainer = Trainer(
-    algorithm=algo,
-    n_runners=4,  # default client/server strategy, parallel runner processes
-    initial_resources={"prompt_template": prompt_template_baseline()},
-    adapter=TraceToMessages(),
-)
-```
+**Practical consequence:** for large-scale runs use **Linux with Python ≤ 3.13**,
+where `apo_train.py` parallelizes automatically (tune with `--n-runners`). On
+macOS/Windows the same command still runs correctly, just serially.
 
 > **Caveat:** Python 3.14 changes the default start method on Linux to `forkserver`
-> (which also pickles the entry point), so the same failure will appear there. Pin
-> Python ≤ 3.13 for parallel runs until this is fixed upstream
+> (which also pickles the entry point), so those environments auto-fall back to the
+> serial mode too. Pin Python ≤ 3.13 for parallel runs until this is fixed upstream
 > (microsoft/agent-lightning: use a module-level function as the process entry point,
 > and a thread-local/contextvar for the active tracer).
 
