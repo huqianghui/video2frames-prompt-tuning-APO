@@ -61,7 +61,9 @@ variables must be added to the `.env` (or exported):
 #    --probe-content-filter checks every candidate against the Azure content
 #    safety filter during sampling (~3% of videos are rejected regardless of
 #    the prompt) and backfills blocked ones, so the splits reach their target
-#    sizes with tasks that are guaranteed to pass.
+#    sizes with tasks that are guaranteed to pass. Probe results are cached per
+#    video in data/content_filter_cache.json, so re-running the script (or
+#    probe_content_filter.py) never re-probes an already-probed video.
 .venv/bin/python prepare_data.py --train-size 40 --val-size 24 --test-size 30 --seed 42 --probe-content-filter
 
 # 2. (Optional) Audit existing splits against the content safety filter.
@@ -169,7 +171,7 @@ Online (requires blob access + Azure OpenAI):
 | `original_data/qwen_0318_swift_task.json` | Customer dataset (pandas `to_json` dump). **Never commit.** |
 | `blob_utils.py` | Azure Blob helpers: env loading, video→frame-prefix mapping, frame listing, SAS URLs. |
 | `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`; `--probe-content-filter` skips videos blocked by the content safety filter. |
-| `probe_content_filter.py` | Probes tasks against the Azure content safety filter; reports the blocked ratio per split and optionally removes blocked tasks. |
+| `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
 | `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. |
 | `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round). |

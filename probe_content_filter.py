@@ -15,6 +15,12 @@ Without `--apply` the script only writes the probe report to
 `data/<split>.jsonl` without the blocked tasks (the removed ids are kept in the
 report; regenerate the splits with `prepare_data.py` if you need refills).
 `--from-report` skips probing and applies an existing report (implies `--apply`).
+
+Probe results are cached per task id in `data/content_filter_cache.json` (the
+filter decision depends only on the frames, so it is stable per video): each
+video is probed at most once across all runs of this script and of
+`prepare_data.py --probe-content-filter`. Delete the cache file to force
+re-probing.
 """
 
 from __future__ import annotations
@@ -35,6 +41,38 @@ from frame_agent import DATA_DIR, FrameTask, task_model
 logger = logging.getLogger(__name__)
 
 REPORT_PATH = DATA_DIR / "content_filter_probe.json"
+CACHE_PATH = DATA_DIR / "content_filter_cache.json"
+
+
+def load_probe_cache(path: Path = CACHE_PATH) -> Dict[str, bool]:
+    """Load the persistent task-id → blocked cache (empty when missing)."""
+    if not path.exists():
+        return {}
+    cache = cast(Dict[str, bool], json.loads(path.read_text(encoding="utf-8")))
+    logger.info("Loaded content-filter probe cache with %d entries from %s", len(cache), path)
+    return cache
+
+
+def save_probe_cache(cache: Dict[str, bool], path: Path = CACHE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def probe_task_cached(client: AzureOpenAI, task: FrameTask, config: Any, cache: Dict[str, bool]) -> bool:
+    """`probe_task` with a persistent cache: each video is probed at most once across runs.
+
+    The filter decision depends only on the input frames, so the result is stable
+    per video (task id). New results are appended to the cache file immediately,
+    so an interrupted run loses nothing.
+    """
+    task_id = task["id"]
+    if task_id in cache:
+        logger.info("Task %s (%s): cache hit (blocked=%s)", task_id, task["family"], cache[task_id])
+        return cache[task_id]
+    blocked = probe_task(client, task, config)
+    cache[task_id] = blocked
+    save_probe_cache(cache)
+    return blocked
 
 
 def probe_task(client: AzureOpenAI, task: FrameTask, config: Any) -> bool:
@@ -71,6 +109,7 @@ def main() -> None:
     load_dotenv()
     load_env()
 
+    cache: Dict[str, bool] = {}
     if args.from_report:
         report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
         args.apply = True
@@ -79,6 +118,7 @@ def main() -> None:
         config = blob_config_from_env()
         client = AzureOpenAI()
         report = {"model": task_model(), "splits": {}}
+        cache = load_probe_cache()
 
     for split in args.splits:
         path = DATA_DIR / f"{split}.jsonl"
@@ -91,7 +131,7 @@ def main() -> None:
             for i, task in enumerate(tasks, start=1):
                 logger.info("[%s %d/%d] probing task %s (%s, %d frames)",
                             split, i, len(tasks), task["id"], task["family"], task["num_frames"])
-                if probe_task(client, task, config):
+                if probe_task_cached(client, task, config, cache):
                     blocked.append({"id": task["id"], "family": task["family"], "video": task["video"]})
             report["splits"][split] = {
                 "total": len(tasks),

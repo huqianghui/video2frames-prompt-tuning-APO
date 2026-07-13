@@ -264,14 +264,15 @@ def main() -> None:
         from openai import AzureOpenAI
 
         from frame_agent import FrameTask
-        from probe_content_filter import probe_task
+        from probe_content_filter import load_probe_cache, probe_task_cached
 
         load_dotenv()
         client = AzureOpenAI()
+        probe_cache = load_probe_cache()
 
         def probe_candidate(task: Dict[str, Any]) -> bool:
             logger.info("Probing task %s (%s, %d frames)", task["id"], task["family"], task["num_frames"])
-            return probe_task(client, cast(FrameTask, task), config)
+            return probe_task_cached(client, cast(FrameTask, task), config, probe_cache)
 
         is_blocked = probe_candidate
 
