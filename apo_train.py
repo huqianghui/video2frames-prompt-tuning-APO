@@ -107,6 +107,12 @@ def main() -> None:
         action="store_true",
         help="Use the framework's built-in APO meta-prompts instead of the project-specific ones in prompts/.",
     )
+    parser.add_argument(
+        "--enable-agentops-service",
+        action="store_true",
+        help="Upload traces to the AgentOps SaaS (app.agentops.ai). Disabled by default: tracing still runs "
+        "locally and training is unaffected.",
+    )
     args = parser.parse_args()
 
     if args.smoke:
@@ -121,8 +127,10 @@ def main() -> None:
     load_env()
     setup_logging()
     setup_apo_logger()
-    os.environ[ENABLE_AGENTOPS_SERVICE_ENV] = "true"
-    enable_agentops_service(True)
+    # AgentOps SaaS upload is opt-in; local span collection (required for APO) always runs.
+    # The env var propagates the choice to forked runner processes.
+    os.environ[ENABLE_AGENTOPS_SERVICE_ENV] = "true" if args.enable_agentops_service else "false"
+    enable_agentops_service(args.enable_agentops_service)
 
     gradient_model = os.environ.get("APO_GRADIENT_MODEL", "gpt-4.1")
     apply_edit_model = os.environ.get("APO_APPLY_EDIT_MODEL", "gpt-4.1-mini")
