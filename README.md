@@ -118,6 +118,18 @@ See [doc/reward-design.md](doc/reward-design.md) for the design rationale, the
 assumptions that should be confirmed with the customer before a large-scale
 run, and the suggested next steps for that conversation.
 
+## APO Meta-Prompts
+
+APO itself is driven by two meta-prompts: a *text gradient* template that
+critiques the current prompt from rollout traces, and an *apply edit* template
+that rewrites it. `apo_train.py` uses the project-specific versions in
+`prompts/` **by default** — they teach the optimizer the reward structure
+(5-field JSON contract, 0.2/0.2/0.6 weights, content-filter rejections are not
+the prompt's fault) and forbid rewrites that add frame/`<video>` placeholders.
+Pass `--default-poml` to fall back to the framework's built-in templates. See
+[doc/apo-poml-customization.md](doc/apo-poml-customization.md) for what the two
+files do and the exact changes vs the defaults.
+
 ## Execution Strategy & Platform Notes
 
 `apo_train.py` picks the execution strategy automatically (`execution_strategy()`):
@@ -184,11 +196,13 @@ Online (requires blob access + Azure OpenAI):
 | `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`; `--probe-content-filter` skips videos blocked by the content safety filter. |
 | `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
-| `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. |
+| `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
+| `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | Project-specific APO meta-prompts encoding the reward structure and the frame-placeholder contract. |
 | `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round). |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
+| `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | What the APO meta-prompts do, why they are customized, and the exact changes vs the framework defaults (English/Chinese). |
 | `README.md` / `README.zh.md` | This document (English/Chinese). |
 | `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
 | `conftest.py` | Makes project modules importable from `tests/`. |

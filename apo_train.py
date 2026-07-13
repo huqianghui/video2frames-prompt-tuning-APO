@@ -7,9 +7,15 @@ the customer dataset. Only the instruction text is tuned; the per-video
 Usage:
     python apo_train.py [--beam-rounds 2] [--beam-width 2] [--branch-factor 2]
                         [--gradient-batch-size 4] [--val-batch-size 24] [--smoke]
+                        [--default-poml]
 
 `--smoke` shrinks everything to the minimum (1x1x1 beam, tiny batches) to
 verify the end-to-end loop cheaply.
+
+By default APO runs with the project-specific meta-prompts in `prompts/`
+(they encode the reward structure and the frame-placeholder contract; see
+`doc/apo-poml-customization.md`). `--default-poml` falls back to the
+framework's built-in templates.
 
 The best prompt and a score summary are written to `results/`.
 """
@@ -40,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 RESULTS_DIR = PROJECT_ROOT / "results"
 LOG_DIR = PROJECT_ROOT / "log"
+PROMPTS_DIR = PROJECT_ROOT / "prompts"
+GRADIENT_POML = PROMPTS_DIR / "text_gradient_video2frames.poml"
+APPLY_EDIT_POML = PROMPTS_DIR / "apply_edit_video2frames.poml"
 
 
 def setup_apo_logger(file_path: Path = LOG_DIR / "apo.log") -> None:
@@ -93,6 +102,11 @@ def main() -> None:
     parser.add_argument("--val-batch-size", type=int, default=24)
     parser.add_argument("--n-runners", type=int, default=4, help="Parallel runners (Linux/fork platforms only).")
     parser.add_argument("--smoke", action="store_true", help="Minimal run to verify the end-to-end loop.")
+    parser.add_argument(
+        "--default-poml",
+        action="store_true",
+        help="Use the framework's built-in APO meta-prompts instead of the project-specific ones in prompts/.",
+    )
     args = parser.parse_args()
 
     if args.smoke:
@@ -113,6 +127,16 @@ def main() -> None:
     gradient_model = os.environ.get("APO_GRADIENT_MODEL", "gpt-4.1")
     apply_edit_model = os.environ.get("APO_APPLY_EDIT_MODEL", "gpt-4.1-mini")
 
+    poml_kwargs: Dict[str, Any] = {}
+    if args.default_poml:
+        logger.info("Using the framework's built-in APO meta-prompts (--default-poml).")
+    else:
+        poml_kwargs = {
+            "gradient_prompt_files": [GRADIENT_POML],
+            "apply_edit_prompt_files": [APPLY_EDIT_POML],
+        }
+        logger.info("Using project APO meta-prompts: %s, %s", GRADIENT_POML.name, APPLY_EDIT_POML.name)
+
     algo = APO[FrameTask](
         AsyncAzureOpenAI(),
         gradient_model=gradient_model,
@@ -122,6 +146,7 @@ def main() -> None:
         beam_width=args.beam_width,
         branch_factor=args.branch_factor,
         beam_rounds=args.beam_rounds,
+        **poml_kwargs,
     )
     trainer = Trainer(
         algorithm=algo,
@@ -156,6 +181,7 @@ def main() -> None:
                 "branch_factor": args.branch_factor,
                 "gradient_model": gradient_model,
                 "apply_edit_model": apply_edit_model,
+                "custom_poml": not args.default_poml,
             },
             indent=2,
         ),

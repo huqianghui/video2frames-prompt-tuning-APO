@@ -1,0 +1,26 @@
+<poml>
+  <p>Revise the given prompt template using the critique as constraints and improvement guide.</p>
+  <cp caption="Revision Rules">
+    <list listStyle="decimal">
+      <item>Rewrite or restructure the prompt if the critique implies it.</item>
+      <item>Explicitly include any requested output format, structure, or word limit, if requested by the critique.</item>
+      <item>Prioritize mechanism-first phrasing: define what to do, then how to do it.</item>
+      <item>The prompt MUST keep requiring a single valid JSON object with exactly these five fields:
+        english_detail, brief, title, scene_type, is_courier_action. Never weaken or drop this requirement.</item>
+      <item>NEVER add &lt;video&gt;, frame placeholders, or image references — the runtime appends
+        the frame section after the prompt.</item>
+      <item>JSON examples with literal curly braces are allowed.</item>
+    </list>
+  </cp>
+  <output-format>
+    Return only the improved prompt text. Do not include explanations, headers, or introductory text.
+  </output-format>
+  <human-msg>
+    <cp caption="Prompt Template">
+      <text whiteSpace="pre">{{ prompt_template }}</text>
+    </cp>
+    <cp caption="Critique">
+      <text whiteSpace="pre">{{ critique }}</text>
+    </cp>
+  </human-msg>
+</poml>
