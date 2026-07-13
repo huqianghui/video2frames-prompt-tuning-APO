@@ -10,14 +10,20 @@ script:
    and stores the fixed instruction (the part APO will tune) in
    `data/baseline_prompt.txt`.
 3. Parses each `solution` JSON string into a normalized ground-truth dict.
-4. Stratified-samples train/val/test subsets by dataset family, resolving the
-   pre-extracted frame blobs for each sampled video from Azure Blob Storage.
-5. Writes `data/train.jsonl`, `data/val.jsonl`, and `data/test.jsonl`.
+4. Stratified-samples candidates jointly by (dataset family, `is_courier_action`),
+   resolving the pre-extracted frame blobs for each sampled video from Azure
+   Blob Storage.
+5. Partitions the resolved tasks into train/val/test so every split mirrors the
+   pool's joint (family, is_courier_action) distribution, guaranteeing the val
+   split holds at least `--val-courier-min` courier positives (`scene_type` is
+   only reported, not quota'd). Writes `data/train.jsonl`, `data/val.jsonl`,
+   and `data/test.jsonl`.
 
 Usage:
     python prepare_data.py [--train-size 40] [--val-size 24] [--test-size 30]
                            [--seed 42] [--source original_data/qwen_0318_swift_task.json]
                            [--output-dir data] [--full] [--probe-content-filter]
+                           [--freeze-test] [--val-courier-min 0.15]
 
 `--full` additionally writes `data/full.jsonl` with all records (without frame
 listings, for later large-scale runs). `--probe-content-filter` probes every
@@ -25,6 +31,12 @@ candidate against the Azure OpenAI content safety filter during sampling and
 skips blocked videos (~3% of the data), so the splits reach their target sizes
 with tasks that are guaranteed to pass the filter (requires Azure OpenAI
 credentials; one cheap low-detail request per candidate).
+
+`--freeze-test` keeps the existing `data/test.jsonl` untouched and excludes its
+videos from sampling, so train/val can be regrown (e.g. `--train-size 80
+--val-size 100`) without contaminating the held-out test split. Note that a
+frozen-test run does not reproduce a previous round's train/val even with the
+same seed: the candidate pool changed, so the RNG draws differ.
 """
 
 from __future__ import annotations
@@ -32,10 +44,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, TypedDict, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict, TypeVar, cast
 
 from blob_utils import PROJECT_ROOT, BlobConfig, blob_config_from_env, list_frame_blobs
 
@@ -134,32 +147,177 @@ def extract_fixed_prompt(records: Sequence[SourceRecord]) -> str:
     return prompt.replace(VIDEO_PLACEHOLDER, "").strip()
 
 
-def stratified_sample(records: Sequence[SourceRecord], total: int, rng: random.Random) -> List[SourceRecord]:
-    """Sample `total` records proportionally across dataset families (at least 1 each)."""
-    by_family: Dict[str, List[SourceRecord]] = defaultdict(list)
-    for record in records:
-        by_family[record["family"]].append(record)
+Cell = Tuple[str, bool]
+K = TypeVar("K")
 
-    quotas: Dict[str, int] = {}
+
+def task_cell(task: Dict[str, Any]) -> Cell:
+    """Joint stratification cell of a task/record: (family, is_courier_action)."""
+    return task["family"], bool(task["solution"]["is_courier_action"])
+
+
+def stratified_sample(records: Sequence[SourceRecord], total: int, rng: random.Random) -> List[SourceRecord]:
+    """Sample `total` records proportionally across (family, is_courier_action) cells (at least 1 each)."""
+    by_cell: Dict[Cell, List[SourceRecord]] = defaultdict(list)
+    for record in records:
+        by_cell[task_cell(cast(Dict[str, Any], record))].append(record)
+
+    quotas: Dict[Cell, int] = {}
     remaining = total
-    for family, members in sorted(by_family.items(), key=lambda item: len(item[1])):
+    for cell, members in sorted(by_cell.items(), key=lambda item: len(item[1])):
         quota = max(1, round(total * len(members) / len(records)))
         quota = min(quota, len(members), remaining)
-        quotas[family] = quota
+        quotas[cell] = quota
         remaining -= quota
-    # Distribute any leftover quota to the largest families.
-    for family, members in sorted(by_family.items(), key=lambda item: -len(item[1])):
+    # Distribute any leftover quota to the largest cells.
+    for cell, members in sorted(by_cell.items(), key=lambda item: -len(item[1])):
         if remaining <= 0:
             break
-        extra = min(remaining, len(members) - quotas[family])
-        quotas[family] += extra
+        extra = min(remaining, len(members) - quotas[cell])
+        quotas[cell] += extra
         remaining -= extra
 
     sampled: List[SourceRecord] = []
-    for family, quota in quotas.items():
-        sampled.extend(rng.sample(by_family[family], quota))
+    for cell, quota in quotas.items():
+        sampled.extend(rng.sample(by_cell[cell], quota))
     rng.shuffle(sampled)
     return sampled
+
+
+def allocate_cells(cell_sizes: Dict[K, int], split_sizes: Dict[str, int]) -> Dict[K, Dict[str, int]]:
+    """Allocate each cell's items across splits proportionally (largest-remainder method).
+
+    Guarantees exact split sizes and exact cell totals. Requires
+    `sum(cell_sizes) == sum(split_sizes)`. Splits are processed in order; each
+    takes its largest-remainder share of what previous splits left, so cells too
+    small to split (size 1-2) end up spread across splits deterministically.
+    """
+    total = sum(cell_sizes.values())
+    if total != sum(split_sizes.values()):
+        raise ValueError(f"Cell sizes sum to {total}, split sizes to {sum(split_sizes.values())}.")
+    remaining = dict(cell_sizes)
+    remaining_total = total
+    allocation: Dict[K, Dict[str, int]] = {key: {split: 0 for split in split_sizes} for key in cell_sizes}
+    for split, size in split_sizes.items():
+        if size == 0:
+            continue
+        raw = {key: remaining[key] * size / remaining_total for key in remaining}
+        base = {key: min(int(raw[key]), remaining[key]) for key in remaining}
+        leftover = size - sum(base.values())
+        order = sorted(remaining, key=lambda key: raw[key] - int(raw[key]), reverse=True)
+        index = 0
+        while leftover > 0:
+            key = order[index % len(order)]
+            if base[key] < remaining[key]:
+                base[key] += 1
+                leftover -= 1
+            index += 1
+        for key, count in base.items():
+            allocation[key][split] = count
+            remaining[key] -= count
+        remaining_total -= size
+    return allocation
+
+
+def stratified_split(
+    tasks: Sequence[Dict[str, Any]],
+    split_sizes: Dict[str, int],
+    rng: random.Random,
+    val_courier_min: float = 0.15,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Partition resolved tasks into splits mirroring the joint (family, is_courier_action) mix.
+
+    Each split gets a proportional share of every cell (largest-remainder
+    allocation, exact split sizes). If the proportional allocation leaves the
+    val split below `val_courier_min` courier positives, the missing positives
+    are reserved for val up front (taken proportionally from the positive
+    cells) and the remainder is re-allocated — so the floor is met by
+    construction whenever the pool holds enough positives; otherwise a loud
+    warning is logged.
+    """
+    total = sum(split_sizes.values())
+    if len(tasks) != total:
+        raise ValueError(f"Got {len(tasks)} tasks but split sizes sum to {total}.")
+    by_cell: Dict[Cell, List[Dict[str, Any]]] = defaultdict(list)
+    for task in tasks:
+        by_cell[task_cell(task)].append(task)
+    for members in by_cell.values():
+        rng.shuffle(members)
+
+    cell_sizes = {cell: len(members) for cell, members in by_cell.items()}
+    allocation = allocate_cells(cell_sizes, split_sizes)
+
+    val_size = split_sizes.get("val", 0)
+    if val_size > 0:
+        needed = math.ceil(val_size * val_courier_min)
+        val_positives = sum(counts["val"] for cell, counts in allocation.items() if cell[1])
+        total_positives = sum(size for cell, size in cell_sizes.items() if cell[1])
+        if val_positives < needed:
+            reserve = min(needed, total_positives, val_size)
+            if reserve < needed:
+                logger.warning(
+                    "Pool has only %d courier positives; val floor of %d (%.0f%% of %d) is unreachable.",
+                    total_positives,
+                    needed,
+                    val_courier_min * 100,
+                    val_size,
+                )
+            logger.info(
+                "Proportional allocation gives val only %d courier positives; reserving %d up front.",
+                val_positives,
+                reserve,
+            )
+            positive_sizes = {cell: size for cell, size in cell_sizes.items() if cell[1]}
+            reserved = allocate_cells(positive_sizes, {"val": reserve, "rest": total_positives - reserve})
+            reduced_sizes = dict(cell_sizes)
+            for cell, counts in reserved.items():
+                reduced_sizes[cell] -= counts["val"]
+            reduced_split_sizes = dict(split_sizes)
+            reduced_split_sizes["val"] -= reserve
+            allocation = allocate_cells(reduced_sizes, reduced_split_sizes)
+            for cell, counts in reserved.items():
+                allocation[cell]["val"] += counts["val"]
+
+    splits: Dict[str, List[Dict[str, Any]]] = {split: [] for split in split_sizes}
+    for cell, counts in allocation.items():
+        members = by_cell[cell]
+        offset = 0
+        for split, count in counts.items():
+            splits[split].extend(members[offset : offset + count])
+            offset += count
+    for rows in splits.values():
+        rng.shuffle(rows)
+    return splits
+
+
+def load_frozen_test_videos(path: Path) -> set[str]:
+    """Video paths of an existing test split, for `--freeze-test` exclusion."""
+    if not path.exists():
+        raise FileNotFoundError(f"--freeze-test requires an existing test split at {path}; run once without it first.")
+    videos: set[str] = set()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                videos.add(json.loads(line)["video"])
+    return videos
+
+
+def log_distribution_table(name: str, tasks: Sequence[Dict[str, Any]]) -> None:
+    """Log the courier / scene_type / family distribution of a split."""
+    count = len(tasks)
+    positives = sum(1 for task in tasks if task["solution"]["is_courier_action"])
+    scenes = Counter(task["solution"]["scene_type"] for task in tasks)
+    families = Counter(task["family"] for task in tasks)
+    logger.info(
+        "%s: %d tasks | courier positives %d (%.0f%%) | scene_type %s | families %s",
+        name,
+        count,
+        positives,
+        100 * positives / count if count else 0.0,
+        dict(scenes.most_common()),
+        dict(families.most_common()),
+    )
 
 
 def resolve_frames(
@@ -226,6 +384,18 @@ def main() -> None:
         action="store_true",
         help="Probe each candidate against the Azure content safety filter and skip blocked videos.",
     )
+    parser.add_argument(
+        "--freeze-test",
+        action="store_true",
+        help="Keep the existing test.jsonl untouched and exclude its videos when regrowing train/val "
+        "(--test-size is ignored; same-seed runs do not reproduce earlier train/val splits).",
+    )
+    parser.add_argument(
+        "--val-courier-min",
+        type=float,
+        default=0.15,
+        help="Minimum courier-positive ratio guaranteed in the val split (default: 0.15).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -253,7 +423,25 @@ def main() -> None:
         )
 
     rng = random.Random(args.seed)
-    total = args.train_size + args.val_size + args.test_size
+    split_sizes: Dict[str, int] = {"train": args.train_size, "val": args.val_size}
+    if args.freeze_test:
+        test_path = args.output_dir / "test.jsonl"
+        frozen_videos = load_frozen_test_videos(test_path)
+        if args.test_size != len(frozen_videos):
+            logger.warning(
+                "--freeze-test keeps the existing %s (%d tasks); ignoring --test-size %d.",
+                test_path,
+                len(frozen_videos),
+                args.test_size,
+            )
+        before = len(records)
+        records = [record for record in records if record["video"] not in frozen_videos]
+        logger.info(
+            "Frozen test split: excluded %d source records whose videos are in %s.", before - len(records), test_path
+        )
+    else:
+        split_sizes["test"] = args.test_size
+    total = sum(split_sizes.values())
     # Oversample so that videos without frames can be skipped and backfilled.
     oversampled = stratified_sample(records, min(len(records), total * 2), rng)
 
@@ -280,9 +468,10 @@ def main() -> None:
     if len(tasks) < total:
         raise RuntimeError(f"Could not resolve enough tasks with frames: got {len(tasks)}, need {total}.")
 
-    write_jsonl(args.output_dir / "train.jsonl", tasks[: args.train_size])
-    write_jsonl(args.output_dir / "val.jsonl", tasks[args.train_size : args.train_size + args.val_size])
-    write_jsonl(args.output_dir / "test.jsonl", tasks[args.train_size + args.val_size : total])
+    splits = stratified_split(tasks, split_sizes, rng, val_courier_min=args.val_courier_min)
+    for name in split_sizes:
+        write_jsonl(args.output_dir / f"{name}.jsonl", splits[name])
+        log_distribution_table(name, splits[name])
     logger.info("Done. Datasets are in %s", args.output_dir)
 
 

@@ -60,6 +60,11 @@ variables must be added to the `.env` (or exported):
 
 ```bash
 # 1. Prepare the datasets (stratified sample; resolves frame blobs from Azure).
+#    Sampling and splitting stratify jointly by (family, is_courier_action),
+#    so every split mirrors the pool's label mix; the val split is guaranteed
+#    at least --val-courier-min (default 0.15) courier positives, and each
+#    split's courier/scene_type/family distribution is logged. scene_type has
+#    no quota (distribution report only).
 #    --probe-content-filter checks every candidate against the Azure content
 #    safety filter during sampling (~3% of videos are rejected regardless of
 #    the prompt) and backfills blocked ones, so the splits reach their target
@@ -67,6 +72,12 @@ variables must be added to the `.env` (or exported):
 #    video in data/content_filter_cache.json, so re-running the script (or
 #    probe_content_filter.py) never re-probes an already-probed video.
 .venv/bin/python prepare_data.py --train-size 40 --val-size 24 --test-size 30 --seed 42 --probe-content-filter
+
+# 1b. (Second round) Regrow train/val while keeping the held-out test split
+#     frozen: --freeze-test leaves test.jsonl untouched and excludes its videos
+#     from resampling (--test-size is ignored). Note: same-seed frozen runs do
+#     not reproduce a previous round's train/val (the candidate pool changed).
+.venv/bin/python prepare_data.py --train-size 80 --val-size 100 --freeze-test --probe-content-filter
 
 # 2. (Optional) Audit existing splits against the content safety filter.
 .venv/bin/python probe_content_filter.py          # report only (data/content_filter_probe.json)
@@ -108,6 +119,46 @@ The default split sizes (40/24/30) are a pilot configuration. See
 [doc/dataset-sizing.md](doc/dataset-sizing.md) for how to estimate the split
 sizes your target effect size actually requires, and for a stage-by-stage
 playbook for growing the datasets and the beam hyperparameters together.
+
+## Test Split: Role and Usage Conditions
+
+The three splits play different roles in APO; **test never participates in any
+optimization decision**:
+
+| Split | Role | Consumer |
+| --- | --- | --- |
+| train | Rollouts for the critic's textual gradients (`--gradient-batch-size` per step) | APO gradient phase |
+| val | Scores each candidate prompt and decides beam survival | APO selection phase |
+| test | Held-out final acceptance; answers "how much better is tuned vs baseline" | `evaluate.py` (manually triggered) |
+
+**Preconditions (check every item before running test):**
+
+1. **APO actually produced a prompt that beats the seed** — check
+   `results/report.md` or the end of the log: if the best prompt is still v0
+   (`Best prompt not updated`), running test is pointless; fix the
+   data/evaluation setup and rerun APO first.
+2. **Verify `results/best_prompt.txt` came from a full run, not a smoke run** —
+   `apo_train.py --smoke` also overwrites `results/best_prompt.txt` and
+   `summary.json`. Check the beam parameters in `summary.json` (smoke is 1/1/1)
+   and the file timestamps to confirm the artifacts belong to the full run.
+3. **Test must stay unseen** — never probe test scores repeatedly during
+   optimization; all tuning and prompt selection uses val only. Every decision
+   made against test discounts the credibility of the final number. Run it once
+   after an optimization round has converged.
+
+**Steps and outputs:**
+
+```bash
+.venv/bin/python evaluate.py --name baseline                                # baseline prompt
+.venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned  # tuned prompt
+```
+
+The two runs write `results/eval_baseline.json` and `results/eval_tuned.json`
+(mean_reward plus per-task details); comparing `mean_reward` is the final
+verdict. If the gap is smaller than the evaluation noise observed on val
+(about ±0.015 under the pilot configuration), do not claim an improvement —
+grow the splits per [doc/dataset-sizing.md](doc/dataset-sizing.md) and
+re-verify first.
 
 ## Reward
 
@@ -225,7 +276,7 @@ Online (requires blob access + Azure OpenAI):
 | --- | --- |
 | `original_data/qwen_0318_swift_task.json` | Customer dataset (pandas `to_json` dump). **Never commit.** |
 | `blob_utils.py` | Azure Blob helpers: env loading, video→frame-prefix mapping, frame listing, SAS URLs. |
-| `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`; `--probe-content-filter` skips videos blocked by the content safety filter. |
+| `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`. Stratifies jointly by (family, `is_courier_action`) with a val courier-positive floor (`--val-courier-min`); `--freeze-test` regrows train/val without touching the test split; `--probe-content-filter` skips videos blocked by the content safety filter. |
 | `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
 | `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
