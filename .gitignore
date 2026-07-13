@@ -1,0 +1,16 @@
+# Customer-provided data: must never be committed or pushed to GitHub.
+original_data/
+
+# Generated datasets and tuning results (derived from customer data).
+data/
+results/
+
+# Local environment.
+.venv/
+.omc/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+log/

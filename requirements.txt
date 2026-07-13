@@ -1,0 +1,13 @@
+# agent-lightning 0.3.1 built from this repository's source (NOT PyPI 0.3.0).
+# The [apo] extra pulls in poml, which the APO algorithm requires.
+# litellm is pinned to the version resolved in the repo's uv.lock; newer sdists
+# require a Rust toolchain to build, which fails on plain pip installs.
+litellm[proxy]==1.90.0
+-e ..[apo]
+
+azure-storage-blob
+python-dotenv
+openai
+httpx
+agentops
+pytest
