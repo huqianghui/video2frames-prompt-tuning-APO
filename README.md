@@ -94,9 +94,9 @@ variables must be added to the `.env` (or exported):
 ```
 
 The default split sizes (40/24/30) are a pilot configuration. See
-[dataset-sizing.md](dataset-sizing.md) for how to estimate the split sizes your
-target effect size actually requires, and for a stage-by-stage playbook for
-growing the datasets and the beam hyperparameters together.
+[doc/dataset-sizing.md](doc/dataset-sizing.md) for how to estimate the split
+sizes your target effect size actually requires, and for a stage-by-stage
+playbook for growing the datasets and the beam hyperparameters together.
 
 ## Reward
 
@@ -183,7 +183,7 @@ Online (requires blob access + Azure OpenAI):
 | `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. |
 | `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round). |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
-| `dataset-sizing.md` / `dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
+| `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `README.md` / `README.zh.md` | This document (English/Chinese). |
 | `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
 | `conftest.py` | Makes project modules importable from `tests/`. |
