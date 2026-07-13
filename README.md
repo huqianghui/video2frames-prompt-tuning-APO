@@ -17,10 +17,12 @@ Frames were pre-extracted (roughly one frame every 3 seconds; the frame count va
 per video) and stored in Azure Blob Storage. APO tunes **only the fixed instruction
 part** of the prompt; the frame placeholder section is rebuilt per task at runtime.
 
-> **Important:** `original_data/qwen_0318_swift_task.json` is customer-provided data.
-> The `original_data/` directory is listed in `.gitignore` and must never be committed
-> or pushed to GitHub. The generated `data/` and `results/` directories are ignored as
-> well.
+> **Important:** `original_data/qwen_0318_swift_task.json` is customer-provided data
+> and must never be committed or pushed to GitHub. The `original_data/`, `data/`,
+> `log/`, and `results/` directories are tracked as empty folders (`.gitkeep` only);
+> their contents are git-ignored because they contain or derive from customer data.
+> Copy `original_data/`, `data/`, and the repository-root `.env` to the training
+> machine separately (e.g. via scp).
 
 ## Installation
 
@@ -177,4 +179,4 @@ Online (requires blob access + Azure OpenAI):
 | `conftest.py` | Makes project modules importable from `tests/`. |
 | `requirements.txt` | Installs agent-lightning 0.3.1 from source (`-e ..[apo]`) plus project deps. |
 | `pyrightconfig.json` | Points pyright at the project virtualenv. |
-| `.gitignore` | Keeps customer data, generated datasets, results, and env files out of git. |
+| `.gitignore` | Keeps customer data, generated datasets, logs, results, and env files out of git (folders kept via `.gitkeep`). |

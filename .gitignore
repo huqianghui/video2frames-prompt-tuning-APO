@@ -1,9 +1,15 @@
 # Customer-provided data: must never be committed or pushed to GitHub.
-original_data/
+original_data/*
+!original_data/.gitkeep
 
-# Generated datasets and tuning results (derived from customer data).
-data/
-results/
+# Generated datasets, logs, and tuning results (derived from customer data):
+# keep the folder structure, never the contents.
+data/*
+!data/.gitkeep
+log/*
+!log/.gitkeep
+results/*
+!results/.gitkeep
 
 # Local environment.
 .venv/
@@ -13,4 +19,3 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.log
-log/
