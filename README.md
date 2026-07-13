@@ -93,6 +93,10 @@ variables must be added to the `.env` (or exported):
 .venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned
 ```
 
+AgentOps SaaS upload is **disabled by default** (spans are still traced
+locally, which is all APO needs). Pass `--enable-agentops-service` to
+`apo_train.py` only if you want session replays on app.agentops.ai.
+
 The default split sizes (40/24/30) are a pilot configuration. See
 [doc/dataset-sizing.md](doc/dataset-sizing.md) for how to estimate the split
 sizes your target effect size actually requires, and for a stage-by-stage
@@ -171,6 +175,22 @@ macOS/Windows the same command still runs correctly, just serially.
 > (microsoft/agent-lightning: use a module-level function as the process entry point,
 > and a thread-local/contextvar for the active tracer).
 
+## Dashboard (Optional)
+
+On Linux runs you may see this in the log:
+
+```
+ERROR    Dashboard directory not found at .../agentlightning/dashboard
+```
+
+**This error is harmless** — the dashboard is an optional web UI for browsing
+the store (rollouts, spans, traces), and training works fine without it. It
+appears because this project installs agent-lightning from source and the
+frontend has not been built. To enable the UI, build it once
+(`cd <agent-lightning>/dashboard && npm install && npm run build`) and restart.
+See [doc/dashboard.md](doc/dashboard.md) for details, including why the
+macOS/Windows shm fallback has no dashboard at all.
+
 ## Smoke Test
 
 Offline (no network, no credentials):
@@ -203,6 +223,7 @@ Online (requires blob access + Azure OpenAI):
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
 | `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | What the APO meta-prompts do, why they are customized, and the exact changes vs the framework defaults (English/Chinese). |
+| `doc/dashboard.md` / `doc/dashboard.zh.md` | What the Agent-Lightning dashboard is, why the "Dashboard directory not found" error is harmless, and how to build/access the UI (English/Chinese). |
 | `README.md` / `README.zh.md` | This document (English/Chinese). |
 | `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
 | `conftest.py` | Makes project modules importable from `tests/`. |

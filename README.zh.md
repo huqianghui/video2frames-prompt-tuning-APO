@@ -88,6 +88,10 @@ Blob 存储配置从仓库根目录的 `.env` 读取
 .venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned
 ```
 
+AgentOps SaaS 上传**默认关闭**（span 仍在本地采集，APO 所需的数据不受影响）。
+只有想在 app.agentops.ai 上查看 session replay 时，才给 `apo_train.py` 加
+`--enable-agentops-service`。
+
 默认的 split 大小（40/24/30）是试点配置。如何根据目标效应量估算真正需要的
 split 大小，以及数据集与 beam 超参数同步阶梯式扩容的操作手册，见
 [doc/dataset-sizing.zh.md](doc/dataset-sizing.zh.md)。
@@ -155,6 +159,21 @@ prompt，*apply edit* 模板据此改写。`apo_train.py` **默认**使用 `prom
 > （microsoft/agent-lightning：进程入口改用模块级函数、活动 tracer 改用
 > thread-local/contextvar），并行运行请锁定 Python ≤ 3.13。
 
+## Dashboard（可选）
+
+在 Linux 上运行时，日志中可能出现：
+
+```
+ERROR    Dashboard directory not found at .../agentlightning/dashboard
+```
+
+**这个报错无害**——dashboard 是一个可选的 Web 界面，用于浏览 store 中的数据
+（rollouts、spans、traces），没有它训练照常进行。报错的原因是本项目从源码安装
+agent-lightning，而前端尚未构建。如需启用 UI，构建一次即可
+（`cd <agent-lightning>/dashboard && npm install && npm run build`）然后重启。
+详见 [doc/dashboard.zh.md](doc/dashboard.zh.md)，其中也解释了为什么
+macOS/Windows 的 shm 回退模式下根本没有 dashboard。
+
 ## 冒烟测试
 
 离线（无网络、无凭据）：
@@ -187,6 +206,7 @@ prompt，*apply edit* 模板据此改写。`apo_train.py` **默认**使用 `prom
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | 数据集规模选择指南（噪声/SE 计算）、阶梯式扩容与 beam 超参调优手册（英/中）。 |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |
 | `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | APO 元 prompt 的作用、定制原因与相对框架默认版的具体改动（英/中）。 |
+| `doc/dashboard.md` / `doc/dashboard.zh.md` | Agent-Lightning dashboard 是什么、为何 "Dashboard directory not found" 报错无害、如何构建与访问 UI（英/中）。 |
 | `README.md` / `README.zh.md` | 本文档（英/中）。 |
 | `tests/` | 离线单元测试（仅 fixture，无客户数据、无网络）。 |
 | `conftest.py` | 让 `tests/` 可以 import 项目模块。 |
