@@ -114,6 +114,10 @@ Each rollout is scored with a hybrid reward in `[0, 1]`:
   (the reward-0 fallback still covers anything that slips through), or audit
   existing splits with `probe_content_filter.py`.
 
+See [doc/reward-design.md](doc/reward-design.md) for the design rationale, the
+assumptions that should be confirmed with the customer before a large-scale
+run, and the suggested next steps for that conversation.
+
 ## Execution Strategy & Platform Notes
 
 `apo_train.py` picks the execution strategy automatically (`execution_strategy()`):
@@ -184,6 +188,7 @@ Online (requires blob access + Azure OpenAI):
 | `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round). |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
+| `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
 | `README.md` / `README.zh.md` | This document (English/Chinese). |
 | `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
 | `conftest.py` | Makes project modules importable from `tests/`. |
