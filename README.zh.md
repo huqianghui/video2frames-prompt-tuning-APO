@@ -90,8 +90,10 @@ Blob 存储配置从仓库根目录的 `.env` 读取
 #    （best_prompt.txt）、完整优化报告（每轮候选 prompt、reward、gradient
 #    批评、验证分数，report.md + report.json）、精简的 prompt 版本树
 #    （派生关系、分数、胜出版本，tree.md），以及记录运行参数和 data/ 各
-#    split 指纹（行数 + 哈希）的 summary.json。多次运行互不覆盖；
-#    results/latest 始终指向最新一次运行。
+#    split 指纹（行数 + 哈希）的 summary.json。若 best prompt 赢过种子，
+#    diffs.md 会给出其派生链每一步的 unified diff（如 v0 → v4 → v7）以及
+#    种子 → best 的整体 diff。多次运行互不覆盖；results/latest 始终指向
+#    最新一次运行。
 .venv/bin/python apo_train.py
 
 # 5b.（可选）从任意一次历史运行的日志重新生成报告。
@@ -248,7 +250,7 @@ macOS/Windows 的 shm 回退模式下根本没有 dashboard。
 | `frame_agent.py` | `@rollout` 帧分析 agent、帧占位符构建、混合 reward、调试 CLI。 |
 | `apo_train.py` | APO 训练入口；每次运行写 `log/apo_<run_id>.log` 和 `results/<run_id>/`（`best_prompt.txt`、带数据指纹的 `summary.json`、运行报告），并更新 `results/latest` 指向。默认使用 `prompts/` 元 prompt（`--default-poml` 回退框架模板）。 |
 | `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | 项目定制的 APO 元 prompt，编码 reward 结构与帧占位符契约。 |
-| `generate_report.py` | 把 APO 运行日志（`--log log/apo_<run_id>.log`）解析为 `report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）以及 `tree.md`（精简版本树：派生关系、分数、beam 存活、胜出版本），写入 `--output-dir`。 |
+| `generate_report.py` | 把 APO 运行日志（`--log log/apo_<run_id>.log`）解析为 `report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）、`tree.md`（精简版本树：派生关系、分数、beam 存活、胜出版本），以及（best prompt 赢过种子时）`diffs.md`（派生链每步 diff + 种子 → best 整体 diff），写入 `--output-dir`。 |
 | `evaluate.py` | 在指定数据集 split 上评估一个 prompt 文件；写 `results/eval_<name>.json`。 |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | 数据集规模选择指南（噪声/SE 计算）、阶梯式扩容与 beam 超参调优手册（英/中）。 |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |

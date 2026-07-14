@@ -3,6 +3,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+import generate_report as generate_report_module
 from generate_report import build_run_reports, generate_report, generate_tree_from_report, parse_records
 
 LOGGER_NAME = "agentlightning.algorithm.apo.apo"
@@ -99,6 +102,31 @@ def test_generate_report_writes_markdown_and_json(tmp_path: Path) -> None:
     assert "v0 (seed) | val 0.37 | beam R1" in tree
     assert "└── v1 (R1) | val 0.8 | beam R1 | * BEST 0.8" in tree
     assert "You are an improved analyzer." not in tree  # no prompt texts in the tree view
+
+
+def test_generate_report_writes_diffs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The seed prompt text is never logged; it is read from data/baseline_prompt.txt.
+    monkeypatch.setattr(generate_report_module, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "baseline_prompt.txt").write_text(
+        "You are a video analyzer.\nAnswer in JSON.", encoding="utf-8"
+    )
+    generate_report(log_path=make_log(tmp_path), output_dir=tmp_path / "results")
+
+    diffs = (tmp_path / "results" / "diffs.md").read_text(encoding="utf-8")
+    assert "Derivation chain: v0 (val 0.37) → v1 (val 0.8)" in diffs
+    assert "## Step v0 → v1 (val 0.8)" in diffs
+    assert "-You are a video analyzer." in diffs
+    assert "+You are an improved analyzer." in diffs
+    assert "Answer in JSON." in diffs  # context line, unchanged
+    assert "## Overall" not in diffs  # single-step chain: overall diff would duplicate the step
+
+
+def test_generate_report_diffs_without_baseline_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(generate_report_module, "PROJECT_ROOT", tmp_path)  # no data/baseline_prompt.txt
+    generate_report(log_path=make_log(tmp_path), output_dir=tmp_path / "results")
+    diffs = (tmp_path / "results" / "diffs.md").read_text(encoding="utf-8")
+    assert "Prompt text for v0 unavailable; diff skipped." in diffs
 
 
 def test_generate_report_missing_log_returns_none(tmp_path: Path) -> None:

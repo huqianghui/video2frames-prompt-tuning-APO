@@ -11,6 +11,10 @@ validation scores) lives in the log file written by `setup_apo_logger` in
 - `results/tree.md` — a compact version tree: which prompt was derived from
   which, validation scores, beam survival per round, and the winning version
   (no prompt texts or critiques).
+- `results/diffs.md` — when the best prompt beats the seed: unified diffs for
+  each step of its derivation chain (e.g. v0 → v4, v4 → v7) plus the overall
+  seed → best diff. The seed's text is read from `data/baseline_prompt.txt`
+  since it is never echoed into the log.
 
 The log may contain several runs (one per process); by default the last run is
 reported.
@@ -26,6 +30,7 @@ as fallback).
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import logging
 import re
@@ -303,6 +308,78 @@ def render_tree(run: RunReport, source_path: Path) -> str:
     return "\n".join(lines)
 
 
+def _resolve_prompt_text(run: RunReport, version: str) -> Optional[str]:
+    """Return a version's full prompt text; the seed's text is never logged, so read it from `data/`."""
+    candidate = run.candidates.get(version)
+    if candidate is None:
+        return None
+    if candidate.prompt_text:
+        return candidate.prompt_text
+    if candidate.parent is None:
+        baseline = PROJECT_ROOT / "data" / "baseline_prompt.txt"
+        if baseline.exists():
+            return baseline.read_text(encoding="utf-8").strip()
+        logger.warning("Seed prompt text unavailable: %s not found.", baseline)
+    return None
+
+
+def _derivation_chain(run: RunReport, version: str) -> List[str]:
+    """Walk parents from `version` back to the seed; returns seed-first order."""
+    chain = [version]
+    while True:
+        parent = run.candidates[chain[-1]].parent
+        if parent is None or parent not in run.candidates:
+            break
+        chain.append(parent)
+    return list(reversed(chain))
+
+
+def _unified_diff(a_text: str, b_text: str, a_label: str, b_label: str) -> str:
+    diff = difflib.unified_diff(a_text.splitlines(), b_text.splitlines(), fromfile=a_label, tofile=b_label, lineterm="")
+    return "\n".join(diff) or "(no textual changes)"
+
+
+def render_diffs(run: RunReport, source_path: Path) -> Optional[str]:
+    """Render prompt diffs along the best version's derivation chain.
+
+    One section per derivation step (e.g. v0 → v4, v4 → v7) plus an overall
+    seed → best diff. Returns None when the seed was never beaten.
+    """
+    if run.best_version is None or not run.best_updated:
+        return None
+    chain = _derivation_chain(run, run.best_version)
+    if len(chain) < 2:
+        return None
+
+    def score(version: str) -> str:
+        val = run.candidates[version].val_score
+        return f" (val {val})" if val is not None else ""
+
+    def diff_section(a: str, b: str, title: str) -> List[str]:
+        a_text, b_text = _resolve_prompt_text(run, a), _resolve_prompt_text(run, b)
+        lines = [f"## {title}", ""]
+        if a_text is None or b_text is None:
+            missing = " and ".join(v for v, t in ((a, a_text), (b, b_text)) if t is None)
+            lines.extend([f"_Prompt text for {missing} unavailable; diff skipped._", ""])
+            return lines
+        lines.extend(["```diff", _unified_diff(a_text, b_text, a, b), "```", ""])
+        return lines
+
+    lines = [
+        "# APO Best Prompt Diffs",
+        "",
+        f"- Source: `{source_path}` (process {run.pid}, {run.started} → {run.finished})",
+        f"- Derivation chain: {' → '.join(v + score(v) for v in chain)}",
+        f"- Best prompt: **{run.best_version}** with score **{run.best_score}** vs seed baseline **{run.baseline_score}**",
+        "",
+    ]
+    for parent, child in zip(chain, chain[1:]):
+        lines.extend(diff_section(parent, child, f"Step {parent} → {child}{score(child)}"))
+    if len(chain) > 2:
+        lines.extend(diff_section(chain[0], chain[-1], f"Overall {chain[0]} → {chain[-1]}"))
+    return "\n".join(lines)
+
+
 def run_to_dict(run: RunReport) -> Dict[str, Any]:
     return {
         "pid": run.pid,
@@ -353,6 +430,10 @@ def generate_report(
         json.dumps(run_to_dict(run), indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (output_dir / "tree.md").write_text(render_tree(run, log_path), encoding="utf-8")
+    diffs = render_diffs(run, log_path)
+    if diffs is not None:
+        (output_dir / "diffs.md").write_text(diffs, encoding="utf-8")
+        logger.info("Best-prompt diffs written to %s", output_dir / "diffs.md")
     logger.info(
         "Report for run %s (of %d) written to %s (version tree: %s)", run.pid, len(runs), report_md, output_dir / "tree.md"
     )

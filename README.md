@@ -96,8 +96,10 @@ variables must be added to the `.env` (or exported):
 #    prompts, rewards, gradient critiques, validation scores) in report.md +
 #    report.json, a compact prompt version tree (derivation, scores, winner)
 #    in tree.md, and summary.json which records the run parameters plus a
-#    fingerprint (row count + hash) of the data/ splits used. Runs never
-#    overwrite each other; results/latest always points at the newest run.
+#    fingerprint (row count + hash) of the data/ splits used. When the best
+#    prompt beats the seed, diffs.md shows unified diffs for each step of its
+#    derivation chain (e.g. v0 → v4 → v7) plus the overall seed → best diff.
+#    Runs never overwrite each other; results/latest points at the newest run.
 .venv/bin/python apo_train.py
 
 # 5b. (Optional) Re-generate the report from the log of any past run.
@@ -284,7 +286,7 @@ Online (requires blob access + Azure OpenAI):
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
 | `apo_train.py` | APO training entry point; each run writes `log/apo_<run_id>.log` and `results/<run_id>/` (`best_prompt.txt`, `summary.json` with a data fingerprint, run report), and repoints `results/latest`. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
 | `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | Project-specific APO meta-prompts encoding the reward structure and the frame-placeholder contract. |
-| `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round) and `tree.md` (compact version tree: derivation, scores, beam survival, winner) under `--output-dir`. |
+| `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round), `tree.md` (compact version tree: derivation, scores, beam survival, winner), and — when the best prompt beats the seed — `diffs.md` (per-step derivation diffs plus overall seed → best) under `--output-dir`. |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
