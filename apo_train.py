@@ -17,16 +17,21 @@ By default APO runs with the project-specific meta-prompts in `prompts/`
 `doc/apo-poml-customization.md`). `--default-poml` falls back to the
 framework's built-in templates.
 
-The best prompt and a score summary are written to `results/`.
+Each run gets a timestamped run ID: logs go to `log/apo_<run_id>.log`, outputs
+(best prompt, score summary, report) to `results/<run_id>/`, and the summary
+records a fingerprint (row count + hash) of the `data/` splits used, so runs
+never overwrite each other. `results/latest` always points at the newest run.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import multiprocessing
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -51,7 +56,7 @@ GRADIENT_POML = PROMPTS_DIR / "text_gradient_video2frames.poml"
 APPLY_EDIT_POML = PROMPTS_DIR / "apply_edit_video2frames.poml"
 
 
-def setup_apo_logger(file_path: Path = LOG_DIR / "apo.log") -> None:
+def setup_apo_logger(file_path: Path) -> None:
     """Dump a copy of all the logs produced by the APO algorithm to a file."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(file_path)
@@ -61,7 +66,7 @@ def setup_apo_logger(file_path: Path = LOG_DIR / "apo.log") -> None:
     logging.getLogger("agentlightning.algorithm.apo").addHandler(file_handler)
 
 
-def move_agentops_log() -> None:
+def move_agentops_log(run_id: str) -> None:
     """Move the agentops SDK log into `log/` (the SDK hardcodes `agentops.log` in the cwd)."""
     agentops_log = Path("agentops.log")
     if not agentops_log.exists():
@@ -69,8 +74,36 @@ def move_agentops_log() -> None:
     for handler in logging.getLogger("agentops").handlers:
         if isinstance(handler, logging.FileHandler):
             handler.close()
-    agentops_log.replace(LOG_DIR / "agentops.log")
-    logger.info("Moved agentops.log to %s", LOG_DIR / "agentops.log")
+    target = LOG_DIR / f"agentops_{run_id}.log"
+    agentops_log.replace(target)
+    logger.info("Moved agentops.log to %s", target)
+
+
+def data_fingerprint() -> Dict[str, Any]:
+    """Identify the dataset version used by this run (per-split row count + content hash)."""
+    fingerprint: Dict[str, Any] = {}
+    for split in ("train", "val", "test"):
+        path = PROJECT_ROOT / "data" / f"{split}.jsonl"
+        if not path.exists():
+            fingerprint[split] = None
+            continue
+        content = path.read_bytes()
+        fingerprint[split] = {
+            "rows": sum(1 for line in content.splitlines() if line.strip()),
+            "sha256": hashlib.sha256(content).hexdigest()[:12],
+        }
+    return fingerprint
+
+
+def update_latest_symlink(run_results_dir: Path) -> None:
+    """Point `results/latest` at the most recent run directory."""
+    latest = RESULTS_DIR / "latest"
+    try:
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(run_results_dir.name)
+    except OSError as exc:  # e.g. filesystems without symlink support
+        logger.warning("Could not update %s symlink: %s", latest, exc)
 
 
 def execution_strategy(n_runners: int) -> Dict[str, Any]:
@@ -126,7 +159,10 @@ def main() -> None:
     load_dotenv()
     load_env()
     setup_logging()
-    setup_apo_logger()
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    apo_log_path = LOG_DIR / f"apo_{run_id}.log"
+    setup_apo_logger(apo_log_path)
+    logger.info("Run %s: APO log at %s", run_id, apo_log_path)
     # AgentOps SaaS upload is opt-in; local span collection (required for APO) always runs.
     # The env var propagates the choice to forked runner processes.
     os.environ[ENABLE_AGENTOPS_SERVICE_ENV] = "true" if args.enable_agentops_service else "false"
@@ -178,11 +214,13 @@ def main() -> None:
 
     best = algo.get_best_prompt()
     best_score = algo._history_best_score  # pyright: ignore[reportPrivateUsage]
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    (RESULTS_DIR / "best_prompt.txt").write_text(best.template, encoding="utf-8")
-    (RESULTS_DIR / "summary.json").write_text(
+    run_results_dir = RESULTS_DIR / run_id
+    run_results_dir.mkdir(parents=True, exist_ok=True)
+    (run_results_dir / "best_prompt.txt").write_text(best.template, encoding="utf-8")
+    (run_results_dir / "summary.json").write_text(
         json.dumps(
             {
+                "run_id": run_id,
                 "best_score": best_score,
                 "beam_rounds": args.beam_rounds,
                 "beam_width": args.beam_width,
@@ -190,15 +228,18 @@ def main() -> None:
                 "gradient_model": gradient_model,
                 "apply_edit_model": apply_edit_model,
                 "custom_poml": not args.default_poml,
+                "apo_log": str(apo_log_path.relative_to(PROJECT_ROOT)),
+                "data": data_fingerprint(),
             },
             indent=2,
         ),
         encoding="utf-8",
     )
-    logger.info("Best score: %s. Best prompt written to %s", best_score, RESULTS_DIR / "best_prompt.txt")
+    logger.info("Best score: %s. Best prompt written to %s", best_score, run_results_dir / "best_prompt.txt")
 
-    report_path = generate_report(output_dir=RESULTS_DIR)
-    move_agentops_log()
+    report_path = generate_report(log_path=apo_log_path, output_dir=run_results_dir)
+    update_latest_symlink(run_results_dir)
+    move_agentops_log(run_id)
 
     print(best.template)
     print("best score:", best_score)

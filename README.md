@@ -90,25 +90,27 @@ variables must be added to the `.env` (or exported):
 # 4. Smoke-test the APO loop end to end (minimal beam, cheap).
 .venv/bin/python apo_train.py --smoke
 
-# 5. Full APO run. Best prompt lands in results/best_prompt.txt, a full
-#    optimization report (per-round candidate prompts, rewards, gradient
-#    critiques, validation scores) in results/report.md + results/report.json,
-#    and a compact prompt version tree (derivation, scores, winner) in
-#    results/tree.md.
+# 5. Full APO run. Every run gets a timestamped run ID: the APO log goes to
+#    log/apo_<run_id>.log and all artifacts to results/<run_id>/ — best prompt
+#    (best_prompt.txt), a full optimization report (per-round candidate
+#    prompts, rewards, gradient critiques, validation scores) in report.md +
+#    report.json, a compact prompt version tree (derivation, scores, winner)
+#    in tree.md, and summary.json which records the run parameters plus a
+#    fingerprint (row count + hash) of the data/ splits used. Runs never
+#    overwrite each other; results/latest always points at the newest run.
 .venv/bin/python apo_train.py
 
-# 5b. (Optional) Re-generate the report from an existing log/apo.log, e.g. for
-#     an earlier run in the same log file.
-.venv/bin/python generate_report.py --run -1
+# 5b. (Optional) Re-generate the report from the log of any past run.
+.venv/bin/python generate_report.py --log log/apo_<run_id>.log --output-dir results/<run_id>
 
 # 5c. (Optional) Build only the version tree from an existing report.md — no
 #     log needed (e.g. a report.md copied from another machine). Beam-survival
 #     markers are unavailable in this mode.
-.venv/bin/python generate_report.py --from-report results/report.md
+.venv/bin/python generate_report.py --from-report results/latest/report.md
 
 # 6. Compare baseline vs tuned prompt on the held-out test split.
 .venv/bin/python evaluate.py --name baseline
-.venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned
+.venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned
 ```
 
 AgentOps SaaS upload is **disabled by default** (spans are still traced
@@ -134,13 +136,14 @@ optimization decision**:
 **Preconditions (check every item before running test):**
 
 1. **APO actually produced a prompt that beats the seed** — check
-   `results/report.md` or the end of the log: if the best prompt is still v0
-   (`Best prompt not updated`), running test is pointless; fix the
+   `results/<run_id>/report.md` or the end of the log: if the best prompt is
+   still v0 (`Best prompt not updated`), running test is pointless; fix the
    data/evaluation setup and rerun APO first.
-2. **Verify `results/best_prompt.txt` came from a full run, not a smoke run** —
-   `apo_train.py --smoke` also overwrites `results/best_prompt.txt` and
-   `summary.json`. Check the beam parameters in `summary.json` (smoke is 1/1/1)
-   and the file timestamps to confirm the artifacts belong to the full run.
+2. **Verify the `best_prompt.txt` you evaluate came from a full run, not a
+   smoke run** — each run (smoke included) writes its own `results/<run_id>/`
+   directory, and `results/latest` points at the most recent one, which may be
+   a smoke run. Check the beam parameters in that run's `summary.json` (smoke
+   is 1/1/1) to confirm the artifacts belong to the full run.
 3. **Test must stay unseen** — never probe test scores repeatedly during
    optimization; all tuning and prompt selection uses val only. Every decision
    made against test discounts the credibility of the final number. Run it once
@@ -149,8 +152,8 @@ optimization decision**:
 **Steps and outputs:**
 
 ```bash
-.venv/bin/python evaluate.py --name baseline                                # baseline prompt
-.venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned  # tuned prompt
+.venv/bin/python evaluate.py --name baseline                                       # baseline prompt
+.venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned  # tuned prompt
 ```
 
 The two runs write `results/eval_baseline.json` and `results/eval_tuned.json`
@@ -279,9 +282,9 @@ Online (requires blob access + Azure OpenAI):
 | `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`. Stratifies jointly by (family, `is_courier_action`) with a val courier-positive floor (`--val-courier-min`); `--freeze-test` regrows train/val without touching the test split; `--probe-content-filter` skips videos blocked by the content safety filter. |
 | `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
 | `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
-| `apo_train.py` | APO training entry point; writes `results/best_prompt.txt`, `results/summary.json`, and the run report. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
+| `apo_train.py` | APO training entry point; each run writes `log/apo_<run_id>.log` and `results/<run_id>/` (`best_prompt.txt`, `summary.json` with a data fingerprint, run report), and repoints `results/latest`. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
 | `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | Project-specific APO meta-prompts encoding the reward structure and the frame-placeholder contract. |
-| `generate_report.py` | Parses `log/apo.log` into `results/report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round) and `results/tree.md` (compact version tree: derivation, scores, beam survival, winner). |
+| `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round) and `tree.md` (compact version tree: derivation, scores, beam survival, winner) under `--output-dir`. |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |

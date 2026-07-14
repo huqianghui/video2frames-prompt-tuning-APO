@@ -1,4 +1,4 @@
-"""Generate a human-readable report of an APO run from `apo.log`.
+"""Generate a human-readable report of an APO run from its run log.
 
 The APO algorithm only keeps the history-best prompt in memory; the full
 optimization trace (candidate prompts, per-rollout rewards, gradient critiques,
@@ -16,8 +16,11 @@ The log may contain several runs (one per process); by default the last run is
 reported.
 
 Usage:
-    python generate_report.py [--log log/apo.log] [--output-dir results] [--run -1]
-    python generate_report.py --from-report results/report.md   # tree.md only, no log needed
+    python generate_report.py [--log log/apo_<run_id>.log] [--output-dir results/<run_id>] [--run -1]
+    python generate_report.py --from-report results/latest/report.md   # tree.md only, no log needed
+
+Without `--log`, the newest `log/apo_<run_id>.log` is used (legacy `log/apo.log`
+as fallback).
 """
 
 from __future__ import annotations
@@ -377,9 +380,21 @@ def generate_tree_from_report(report_path: Path, output_dir: Optional[Path] = No
     return tree_md
 
 
+def default_log_path() -> Path:
+    """Pick the newest `log/apo_<run_id>.log`, falling back to the legacy `log/apo.log`."""
+    log_dir = PROJECT_ROOT / "log"
+    candidates = sorted(log_dir.glob("apo_*.log"))
+    return candidates[-1] if candidates else log_dir / "apo.log"
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate an APO run report from apo.log.")
-    parser.add_argument("--log", type=Path, default=PROJECT_ROOT / "log" / "apo.log")
+    parser = argparse.ArgumentParser(description="Generate an APO run report from a run log.")
+    parser.add_argument(
+        "--log",
+        type=Path,
+        default=None,
+        help="Run log to parse. Defaults to the newest log/apo_<run_id>.log (legacy log/apo.log as fallback).",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -399,7 +414,7 @@ def main() -> None:
     if args.from_report is not None:
         path = generate_tree_from_report(args.from_report, args.output_dir)
     else:
-        path = generate_report(args.log, args.output_dir or PROJECT_ROOT / "results", args.run)
+        path = generate_report(args.log or default_log_path(), args.output_dir or PROJECT_ROOT / "results", args.run)
     if path is not None:
         print(path)
 
