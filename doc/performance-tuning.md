@@ -1,10 +1,67 @@
-# Performance Tuning: Concurrency and Run-Time Estimation
+# Performance Tuning: Beam Hyperparameters, Concurrency, and Run-Time Estimation
 
 **English** | [中文](performance-tuning.zh.md)
 
-How to make `apo_train.py` run faster on a capable Linux VM with a
-high-quota Azure OpenAI deployment, and how to compute the right
-parameter values instead of guessing.
+Cost, run time, and search quality are faces of the same coin:
+`--beam-rounds` / `--beam-width` / `--branch-factor` define the shape of
+the search (and therefore the total rollout count = API cost),
+`--n-runners` decides how much of that work is amortized in parallel,
+and your Azure OpenAI quota caps the parallelism. This document covers
+all three layers together: what each parameter means, how they interact,
+the cost formulas, how to derive `n_runners` and the required quota, and
+how to estimate wall-clock time. (See
+[dataset-sizing.md](dataset-sizing.md) for growing the validation split
+together with these hyperparameters.)
+
+## Mental model: beam search over a prompt version tree
+
+Think of prompt optimization as search over a "prompt version tree": the
+seed prompt v0 is the root, and every new candidate is a rewrite of some
+parent. The three beam hyperparameters control the tree's **depth,
+surviving width, and fan-out** respectively.
+
+### `--beam-rounds` (R, depth) — how many iterations
+
+One round = "rewrite the current good prompts → score on the validation
+split → prune". More rounds let improvements **compound across rounds**
+— e.g. a best-prompt derivation chain v0 → v4 → v7 is two rounds each
+advancing one step. R decides how *far* the optimization can travel.
+
+### `--beam-width` (W, width) — how many survivors per round
+
+After each round's scoring, only the W highest-scoring prompts survive
+into the next round as "parents". W = 1 degenerates to greedy
+hill-climbing (follow only the single best path; easy to get stuck in a
+local optimum); larger W keeps more "alternative evolutionary lines"
+alive simultaneously.
+
+### `--branch-factor` (B, fan-out) — how many children per survivor
+
+For each parent: run `g` (`--gradient-batch-size`) train rollouts → the
+gradient model writes a critique → the apply-edit model produces **B
+different** rewrites from it. Larger B tries more diverse edits in a
+single direction.
+
+### One full round, and how the parameters interact
+
+```
+Round r:
+  W parents in the beam
+    └─ each parent → B new candidates   (W×B new prompts total;
+                                          each costs 2 extra sequential meta calls)
+  new candidates + old beam are all scored on val (v rollouts per prompt)
+  top-W advance to round r+1
+```
+
+- **W × B is the per-round "exploration budget".** W=1, B=4 and W=2, B=2
+  both produce 4 candidates per round, but the former bets the budget on
+  many edits of a single line, while the latter keeps two independent
+  lines alive.
+- **R vs W×B is a depth-vs-breadth trade-off.** Compounding improvements
+  need R; hedging against a wrong line needs W; per-round edit diversity
+  needs B.
+- Do not raise W above the per-round candidate supply (last round's
+  survivors + new candidates), or pruning becomes a no-op.
 
 ## The concurrency model
 
@@ -23,7 +80,7 @@ batches**:
 4. Inside one rollout, the multimodal call and the judge call are also
    sequential — a rollout occupies one runner for its full duration.
 
-## Formulas
+## Cost and run-time formulas
 
 Let:
 
@@ -44,6 +101,17 @@ and validation evaluations):
 N = v + R × W × B × (g + v)
 ```
 
+Rollout count ≈ API cost, and it is **linear in R, W, and B** — doubling
+all three quadruples the cost:
+
+| Quantity | Formula | Defaults (2/2/2) | Deeper (4/2/2) | Aggressive (4/2/3) |
+| --- | --- | --- | --- | --- |
+| New prompts | R×W×B | 8 | 16 | 24 |
+| Sequential meta calls | R×W×B×2 | 16 | 32 | 48 |
+| Total rollouts | v + R×W×B×(g+v) | 248 | 536 | 792 |
+
+(With v = 24, g = 8.)
+
 **Wall-clock estimate:**
 
 ```
@@ -62,29 +130,58 @@ T ≈ 6·(6·9 + 8·1) + 8·30 ≈ 10–12 min.
 candidate; T ≈ 6·(2·9 + 8·1) + 8·30 ≈ 6–7 min, and the sequential
 meta-prompt calls become the dominant cost.
 
+Note the wall-clock asymmetry: rollouts are amortized by `--n-runners`,
+but the `W×B×2` gradient/apply-edit calls per round are **sequential**
+— so in wall-clock terms, **raising R is more expensive than raising
+B**.
+
 ## Choosing `n_runners`
 
 - **Upper bound by batch size:** runners beyond `min(g, v)` sit idle
-  during the corresponding phase. With `v = 24` there is no benefit past
-  `n = 24`.
-- **Upper bound by Azure OpenAI quota:** each in-flight rollout holds one
-  request (frames are token-heavy). Required capacity is roughly
+  during the corresponding phase. With `v = 24`, `n = 4` needs
+  `ceil(24/4) = 6` validation waves per candidate while `n = 12` needs
+  only 2; there is no benefit past `n = 24`. Same for the gradient
+  phase — raise `--gradient-batch-size` to ≈ n_runners, or runners idle
+  there.
+- **Upper bound by Azure OpenAI quota:** each in-flight rollout issues 1
+  analysis request to the multimodal deployment and 1 judge request to
+  the judge deployment. Required capacity is roughly
 
   ```
-  RPM ≈ n × 60 / t × 2        # ×2: analysis call + judge call
-  TPM ≈ n × 60 / t × tokens_per_rollout
+  multimodal TPM ≈ n × (60 / t) × input tokens per rollout
+  multimodal RPM ≈ n × (60 / t)
+  judge TPM      ≈ n × (60 / t) × judge input tokens (text-only, a few k per rollout)
   ```
 
-  A rollout with 10–20 frames costs ~10–20 k input tokens, so `n = 12`
-  at `t = 6 s` needs on the order of 1.5–2.5 M TPM on the multimodal
-  deployment. Check your deployment quota before raising `n`.
+  A rollout with 10–20 frames costs ~10–20 k input tokens (the frame
+  images dominate), i.e. roughly **150 k TPM per runner** on the
+  multimodal deployment. Check your deployment quota before raising `n`.
 - **CPU is rarely the limit:** runners spend their time waiting on the
   API, so `n` may exceed the VM's core count.
+
+**Worked example (multimodal deployment 2.5 M TPM, judge deployment
+3 M TPM):**
+
+| n-runners | Multimodal TPM needed | vs 2.5 M quota |
+| --- | --- | --- |
+| 4 | ~600 k | uses 1/4 — wasteful |
+| **12** | ~1.8 M | **comfort zone, recommended** |
+| 16 | ~2.4 M | at the ceiling; frame-heavy videos may hit 429 |
+| ≥ 24 | — | exceeds v, no benefit |
+
+The judge calls are text-only — even `n = 16` uses only a few hundred k
+TPM, so the judge deployment is rarely the bottleneck. Gradient and
+apply-edit are just `W×B` sequential calls per round — negligible.
+Occasional 429s are retried with backoff by the SDK (slower, not fatal)
+— to squeeze the quota, run once, confirm the log has no `429`, then
+raise `n`.
 
 **Recommended starting point on a large VM with high quota:**
 
 ```bash
-.venv/bin/python apo_train.py --n-runners 12 --gradient-batch-size 8
+.venv/bin/python apo_train.py \
+  --beam-rounds 4 --beam-width 2 --branch-factor 2 \
+  --n-runners 12 --gradient-batch-size 8
 ```
 
 Raising `g` both fills the runners during the gradient phase and gives
@@ -101,11 +198,14 @@ meta calls would require a change to the upstream APO implementation
 (`agentlightning/algorithm/apo/apo.py`, `_generate_candidate_prompts`),
 which loops over branches with `await` in series.
 
-## Quick reference
+## Tuning decision table
 
-| Goal | Change |
+| Observation | Action |
 | --- | --- |
-| Faster validation phases | `--n-runners` up to `min(v, quota limit)` |
-| No idle runners during gradient phase | `--gradient-batch-size ≈ n_runners` |
+| Best prompt appeared in the last round (not converged) | raise R |
+| All of a round's candidates score below their parents (edit diversity too low) | raise B |
+| Several lines score close together and you fear pruning the wrong one | raise W |
+| Validation phases are slow | raise `--n-runners` up to `min(v, quota limit)` |
+| Runners idle during the gradient phase | `--gradient-batch-size ≈ n_runners` |
 | Cheaper/faster run overall | lower `R`, `W`, `B` (fewer candidates) |
-| Better statistics, slower | higher `v` (see dataset-sizing.md) |
+| Score differences are within evaluation noise | grow `v` first (see dataset-sizing.md), don't touch R/W/B yet |

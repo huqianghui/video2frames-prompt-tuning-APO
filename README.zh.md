@@ -199,9 +199,10 @@ prompt，*apply edit* 模板据此改写。`apo_train.py` **默认**使用 `prom
 **实际结论：** 大规模运行请使用 **Linux + Python ≤ 3.13**，`apo_train.py` 会自动
 并行（用 `--n-runners` 调节）。macOS/Windows 上同一条命令也能正确运行，只是串行。
 
-并发模型、运行时长与 Azure OpenAI quota 的估算公式、`--n-runners` 和批大小的
-选择方法（如大 VM 上用 `--n-runners 12 --gradient-batch-size 8`），见
-[doc/performance-tuning.zh.md](doc/performance-tuning.zh.md)。
+beam 超参数（`--beam-rounds` / `--beam-width` / `--branch-factor`）的含义与
+调参方法、并发模型、运行时长与 Azure OpenAI quota 的估算公式、`--n-runners`
+和批大小的选择方法（如大 VM 上用 `--n-runners 12 --gradient-batch-size 8`），
+见 [doc/performance-tuning.zh.md](doc/performance-tuning.zh.md)。
 
 > **注意：** Python 3.14 把 Linux 的默认启动方式改为 `forkserver`（同样需要
 > pickle 入口函数），因此那些环境也会自动回退到串行模式。在上游修复之前
@@ -256,7 +257,7 @@ macOS/Windows 的 shm 回退模式下根本没有 dashboard。
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |
 | `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | APO 元 prompt 的作用、定制原因与相对框架默认版的具体改动（英/中）。 |
 | `doc/dashboard.md` / `doc/dashboard.zh.md` | Agent-Lightning dashboard 是什么、为何 "Dashboard directory not found" 报错无害、如何构建与访问 UI（英/中）。 |
-| `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | 并发模型、运行时长/quota 估算公式、`--n-runners` 与批大小的选择方法（英/中）。 |
+| `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | Beam 超参数（rounds/width/branch-factor）的意义与调参决策表、并发模型、运行时长/quota 估算公式、`--n-runners` 与批大小的选择方法（英/中）。 |
 | `README.md` / `README.zh.md` | 本文档（英/中）。 |
 | `tests/` | 离线单元测试（仅 fixture，无客户数据、无网络）。 |
 | `conftest.py` | 让 `tests/` 可以 import 项目模块。 |

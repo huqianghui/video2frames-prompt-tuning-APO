@@ -232,10 +232,11 @@ platform-related limitations:
 where `apo_train.py` parallelizes automatically (tune with `--n-runners`). On
 macOS/Windows the same command still runs correctly, just serially.
 
-See [doc/performance-tuning.md](doc/performance-tuning.md) for the concurrency
-model, formulas to estimate run time and Azure OpenAI quota needs, and how to
-pick `--n-runners` / batch sizes (e.g. `--n-runners 12 --gradient-batch-size 8`
-on a large VM).
+See [doc/performance-tuning.md](doc/performance-tuning.md) for what the beam
+hyperparameters (`--beam-rounds` / `--beam-width` / `--branch-factor`) mean and
+how to tune them, the concurrency model, formulas to estimate run time and
+Azure OpenAI quota needs, and how to pick `--n-runners` / batch sizes (e.g.
+`--n-runners 12 --gradient-batch-size 8` on a large VM).
 
 > **Caveat:** Python 3.14 changes the default start method on Linux to `forkserver`
 > (which also pickles the entry point), so those environments auto-fall back to the
@@ -292,7 +293,7 @@ Online (requires blob access + Azure OpenAI):
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
 | `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | What the APO meta-prompts do, why they are customized, and the exact changes vs the framework defaults (English/Chinese). |
 | `doc/dashboard.md` / `doc/dashboard.zh.md` | What the Agent-Lightning dashboard is, why the "Dashboard directory not found" error is harmless, and how to build/access the UI (English/Chinese). |
-| `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | Concurrency model, run-time/quota formulas, and how to choose `--n-runners` and batch sizes (English/Chinese). |
+| `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | Beam hyperparameters (rounds/width/branch-factor) with a tuning decision table, concurrency model, run-time/quota formulas, and how to choose `--n-runners` and batch sizes (English/Chinese). |
 | `README.md` / `README.zh.md` | This document (English/Chinese). |
 | `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
 | `conftest.py` | Makes project modules importable from `tests/`. |
