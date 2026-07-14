@@ -44,14 +44,47 @@ single direction.
 
 ### One full round, and how the parameters interact
 
+Every round runs three fixed steps, each on a different dataset (source:
+`agentlightning/algorithm/apo/apo.py`):
+
 ```
 Round r:
-  W parents in the beam
-    └─ each parent → B new candidates   (W×B new prompts total;
-                                          each costs 2 extra sequential meta calls)
-  new candidates + old beam are all scored on val (v rollouts per prompt)
-  top-W advance to round r+1
+  ① Candidate generation (W parents in the beam, × B each)
+     └─ draw g tasks from train (--gradient-batch-size, apo.py:650)
+        → run rollouts for traces → gradient model writes a critique
+        → apply-edit model produces a new prompt
+        [train's role: supply "failure samples" to the critic;
+         these scores never enter any ranking]
+        (W×B new candidates total; each costs 2 extra sequential meta calls)
+
+  ② Beam scoring / selection
+     └─ draw one batch from val (--val-batch-size, apo.py:719)
+        → score all candidates → sort → top-W survive into round r+1
+        [val's role: decide who stays alive]
+
+  ③ Best re-evaluation
+     └─ the FULL val dataset (apo.py:777)
+        → this round's beam leader is re-tested → best is updated only
+          if the re-test beats the history best
+        [role: a noise gate — a candidate must score high twice to
+         become best]
 ```
+
+Three easy-to-miss consequences of ③:
+
+- **Only each round's beam leader gets to challenge the best.** If the
+  truly best prompt is pushed to 2nd place by noise in ②, it never even
+  gets a re-test.
+- **The final best score comes from the re-test, not from ②** — which
+  is why tree.md can show a candidate scoring 0.756 in ② yet not being
+  best: its re-test came in lower, meaning the first score was partly
+  noise.
+- **When `--val-batch-size` < the full val size, ② and ③ use different
+  data**: ② uses random subsets (shuffled, epoch-based rotation — each
+  task appears at most once per epoch), ③ uses everything. When they
+  are equal (e.g. 24/24 or 100/100), ③ degenerates to a second run of
+  the same tasks — it only guards against LLM randomness and provides
+  no fresh-data check.
 
 - **W × B is the per-round "exploration budget".** W=1, B=4 and W=2, B=2
   both produce 4 candidates per round, but the former bets the budget on
