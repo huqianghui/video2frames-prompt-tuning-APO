@@ -315,3 +315,43 @@ weight) would have moved too. It did not.
 6. **Test split is small (30)** — mean SE alone is ~0.02–0.03; resolving
    0.01-level effects needs a larger test split (see
    [dataset-sizing.md](dataset-sizing.md)).
+
+## 6. Target-model probe: gpt-5.4 (2026-07-18, preliminary)
+
+Follow-up #2 above, executed: same untuned baseline prompt, same frozen test
+split (30 tasks, `b5065f2d3016`), same v2 reward and judge (`gpt-4.1-mini`),
+only `AZURE_OPENAI_DEPLOYMENT` switched from `gpt-4.1-mini` to `gpt-5.4`.
+Single pass (`results/eval_baseline_gpt54_v2.json`).
+
+| target model (baseline prompt, v2 scale) | mean_reward |
+| --- | --- |
+| gpt-4.1-mini | 0.5686 |
+| **gpt-5.4** | **0.6095 (+0.041)** |
+| reference: tuned_v2 @ gpt-4.1-mini | 0.6033 |
+
+Per-task paired stats (gpt-5.4 − gpt-4.1-mini, same task IDs):
+
+- 17 tasks up / 13 down; delta quantiles −0.51 / −0.04 / +0.02 / +0.13 / +0.52.
+- Paired delta SD 0.193 → SE of the mean delta (n=30) = 0.035, so
+  **+0.041 ≈ 1.2 SE — directionally positive, not yet conclusive.**
+- Tasks below 0.3 (gated/failed): 3 → 1.
+- Family means: project 0.487→0.553, Charades 0.581→0.606, VIRAT 0.493→0.826;
+  biggest regressions `2023` (−0.51, landing at 0.28, likely a gate) and
+  `482` (−0.39) — gpt-5.4 appears to make *different* mistakes, worth a
+  component-level look.
+
+**Reading:** the model swap alone (+0.041, zero tuning) matches or exceeds
+the entire APO gain on the old model (+0.035), and the untuned prompt on
+gpt-5.4 already beats the tuned prompt on gpt-4.1-mini — consistent with the
+section-5 diagnosis that the remaining headroom is perception-bound, not
+prompt-bound.
+
+**Pending before switching:** (1) two repeat passes
+(`--name baseline_gpt54_v2_r2/_r3`) to average out generation variance;
+(2) component details for `2023`/`482` (which gate or rule fired — if
+gpt-5.4's failures are verbosity/rule-type, they are prompt-fixable and a
+re-run of APO on the new target has extra headroom); (3) transfer check of
+the old tuned prompt
+(`evaluate.py --prompt results/20260717_145308/best_prompt.txt --name tuned_v2_gpt54 --reward-version v2`);
+(4) if confirmed, re-run APO with target gpt-5.4 (v2 reward,
+`--branch-factor 4`, `judge_samples: 3`).

@@ -283,3 +283,39 @@ prompt 真的改善了语义描述质量，v1 刻度（0.6 judge 权重）也应
 6. **Test split 太小（30 条）**——仅均值 SE 就有约 0.02–0.03；要分辨 0.01
    量级的效应需要更大的 test split（见
    [dataset-sizing.zh.md](dataset-sizing.zh.md)）。
+
+## 6. Target 模型探测：gpt-5.4（2026-07-18，初步）
+
+即上面后续动作第 2 条的执行：同一个未调优 baseline prompt、同一个冻结
+test split（30 条，`b5065f2d3016`）、同样的 v2 reward 和 judge
+（`gpt-4.1-mini`），只把 `AZURE_OPENAI_DEPLOYMENT` 从 `gpt-4.1-mini` 换成
+`gpt-5.4`。单次运行（`results/eval_baseline_gpt54_v2.json`）。
+
+| target 模型（baseline prompt，v2 刻度） | mean_reward |
+| --- | --- |
+| gpt-4.1-mini | 0.5686 |
+| **gpt-5.4** | **0.6095（+0.041）** |
+| 参照：tuned_v2 @ gpt-4.1-mini | 0.6033 |
+
+逐任务配对统计（gpt-5.4 − gpt-4.1-mini，同一批任务 ID）：
+
+- 17 条涨 / 13 条跌；差值分位数 −0.51 / −0.04 / +0.02 / +0.13 / +0.52。
+- 配对差值 SD 0.193 → 均值差的 SE（n=30）= 0.035，即
+  **+0.041 ≈ 1.2 个 SE——方向为正，但尚不足以下结论。**
+- 低于 0.3（触发硬门/失败）的任务：3 条 → 1 条。
+- Family 均值：project 0.487→0.553、Charades 0.581→0.606、
+  VIRAT 0.493→0.826；最大退化为 `2023`（−0.51，落到 0.28，疑似触发
+  硬门）和 `482`（−0.39）——gpt-5.4 犯的似乎是*不同类型*的错，
+  值得看组件明细。
+
+**判读：** 仅换模型（+0.041，零调优）就追平甚至超过了旧模型上整个 APO
+的收益（+0.035），且未调优 prompt 在 gpt-5.4 上已经超过旧模型上的调优
+prompt——与第 5 节"剩余空间在感知、不在 prompt"的诊断一致。
+
+**切换前待办：**（1）再重复跑 2 遍（`--name baseline_gpt54_v2_r2/_r3`）
+平均掉生成方差；（2）查 `2023`/`482` 的组件明细（触发的是哪个硬门或
+规则——如果 gpt-5.4 的失败属于啰嗦/规则类，那正是 prompt 可修复的，在新
+target 上重跑 APO 反而有额外空间）；（3）测旧 tuned prompt 的迁移性
+（`evaluate.py --prompt results/20260717_145308/best_prompt.txt --name tuned_v2_gpt54 --reward-version v2`）；
+（4）确认后在 gpt-5.4 上重跑 APO（v2 reward、`--branch-factor 4`、
+`judge_samples: 3`）。
