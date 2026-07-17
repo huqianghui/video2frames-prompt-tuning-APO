@@ -146,7 +146,172 @@ How to read the results:
 
 Fill in section 5 once the runs finish.
 
-## 5. End-to-end results (to be filled in)
+## 5. End-to-end results (2026-07-17, Linux VM)
 
-_After the two APO runs and the 2×2 evaluation, record here: run IDs, beam
-parameters, mean_reward per cell, improvement over baseline, conclusion._
+### Run configuration
+
+| Item | Value |
+| --- | --- |
+| Date | 2026-07-17 (Linux VM, parallel runners) |
+| Data | `prepare_data.py --train-size 80 --val-size 100 --freeze-test --probe-content-filter` (train 80 / val 100 / test 30) |
+| APO run (v1 reward) | `results/20260717_143056/` |
+| APO run (v2 reward) | `results/20260717_145308/` |
+| Beam / batch parameters | see each run's `summary.json` on the VM (not copied here) |
+
+> **Test-split caveat:** the frozen `test.jsonl` on the VM (sha256 prefix
+> `b5065f2d3016`) is **not** the split used for the section-2 scale
+> calibration (different task IDs — e.g. 2282/4221/… vs 5266/375/…, and it
+> contains a `ucf_crime` task the old split did not). The section-2 baseline
+> anchors (v1 0.734 / v2 0.522) do not apply; the baseline prompt was
+> therefore **re-evaluated on this split** (2026-07-18) to provide the anchor
+> row below.
+
+### 2×3 matrix (mean_reward on test, 30 tasks)
+
+| | scored under v1 | scored under v2 |
+| --- | --- | --- |
+| `baseline` (seed prompt) | 0.7552 | 0.5686 |
+| `tuned_v1` (best of v1-reward run) | 0.7509 (−0.004) | 0.5993 (+0.031) |
+| `tuned_v2` (best of v2-reward run) | **0.7609** (+0.006) | **0.6033** (+0.035) |
+
+(Deltas in parentheses are vs baseline on the same scale.)
+
+Training-side numbers (val, 100 tasks): v1 run seed 0.764 → best 0.798;
+v2 run seed 0.594 → best 0.643. Beam 2/2/2 in both runs; in **both** runs
+every round-2 child scored below its round-1 parent, i.e. all gains came
+from the first edit and the search saturated after one round.
+
+Per-task win/loss for `tuned_v2` vs `tuned_v1`:
+
+- v1 scale: 13 win / 11 loss / 6 tie; v2 scale: 14 win / 15 loss / 1 tie.
+- Per-family means point in no consistent direction (tuned_v2 better on
+  Charades and ucf_crime, worse on NWPU/VIRAT/project under v1 scale; mixed
+  under v2 scale).
+
+### Conclusion
+
+With the baseline anchor in place the picture is sharper than "statistical
+tie":
+
+- **On the v1 scale nothing improved** — tuned_v1 −0.004, tuned_v2 +0.006,
+  both within noise. The coarse semantic judge (0.6 weight in v1) saw no
+  difference from either tuned prompt.
+- **On the v2 scale both tuned prompts improved by ~+0.03** — including
+  `tuned_v1`, which never saw the v2 reward during training. What actually
+  improved is the part v2 measures explicitly and v1 barely does: rule
+  compliance and field structure (deterministic, prompt-fixable), not the
+  semantic content of the descriptions.
+- Head-to-head, `tuned_v2` vs `tuned_v1` remains within noise on both scales
+  (+0.010 / +0.004; per-task near coin-flip).
+
+### Diagnosis: why the gain is ~0.04 regardless of the "wider" v2 scale
+
+Evidence from `report.json` (per-candidate val reward vectors) and the
+gradient critiques:
+
+1. **v2 widened the scale along the task axis, not the prompt axis.** v2's
+   lower baseline (0.57 vs 0.76) comes from harsher scoring of *hard tasks*
+   (per-field judges, gates on visually ambiguous videos). That headroom is
+   claimable by a better vision model, not by instruction wording. What a
+   prompt edit can actually move — the deterministic rule-compliance slice
+   (0.25 weight) plus marginal judge gains — is worth roughly +0.03–0.05,
+   and APO captured almost exactly that (+0.035 on test).
+2. **Between-candidate spread ≈ measurement noise.** Across the 9 candidates
+   per run, val means span ~0.05 while the SE of a candidate mean (n=100,
+   per-task SD ~0.12) is ~0.011–0.013. Most candidates are statistically
+   indistinguishable, so beam selection among the mid-pack is noisy.
+3. **Per-task churn is huge and mostly cancels.** In the v2 run, best-vs-seed
+   per-task deltas range −0.40…+0.65 (26 tasks improve >0.2, 12 regress
+   >0.2); the +0.049 val mean gain is a small residual of large opposing
+   movements dominated by generation/judge variance.
+4. **The search saturated after one edit.** In both runs all four round-2
+   children scored below their round-1 parents. More rounds at this
+   configuration would not have helped; the first critique already harvested
+   the low-hanging fruit (the critiques overwhelmingly target rule
+   compliance — word caps, exactly-five-keys, person-not-gendered,
+   no-meta-words — "gate" is mentioned once across all gradients).
+5. **Gates did respond on val** (seed had 4 val tasks below 0.3, best had 0),
+   but gate-triggering is largely content-driven, so the effect is small and
+   does not transfer cleanly to test.
+
+### Evidence appendix (numbers behind the diagnosis)
+
+All numbers computed from `results/<run_id>/report.json` (per-candidate
+100-task val reward vectors) and the gradient critique texts embedded in it.
+
+**A. Candidate val scores (9 candidates per run).**
+
+| Candidate | v1 run (parent) | v2 run (parent) |
+| --- | --- | --- |
+| v0 seed | 0.764 | 0.594 |
+| v1 (R1, v0) | 0.788 | 0.637 |
+| v2 (R1, v0) | 0.774 | 0.615 |
+| v3 (R1, v0) | 0.781 | **0.643** |
+| v4 (R1, v0) | 0.773 | 0.615 |
+| v5 (R2) | 0.746 (← v3) | 0.613 (← v1) |
+| v6 (R2) | 0.740 (← v3) | 0.617 (← v1) |
+| v7 (R2) | 0.775 (← v1) | 0.627 (← v3) |
+| v8 (R2) | 0.784 (← v1) | 0.617 (← v3) |
+
+Every round-2 child scores below its parent in **both** runs (8 of 8
+regressions) — the basis for "the search saturated after one edit".
+
+**B. Noise floor vs candidate spread.** Mean per-task reward SD across
+candidates: 0.113 (v1 run) / 0.133 (v2 run). With n=100 val tasks, the SE of
+a candidate mean is 0.0113 / 0.0133. Candidate mean spread (max−min): 0.057
+(v1 run) / 0.049 (v2 run) — i.e. the whole field spans ~4 SE and the
+mid-pack differs by ≤1–2 SE, so beam selection among them is noise-driven.
+
+**C. Per-task churn, best vs seed (same val split).**
+
+| | v1 run (v1−v0) | v2 run (v3−v0) |
+| --- | --- | --- |
+| Mean delta | +0.034 | +0.049 |
+| Delta quantiles (min/q1/med/q3/max) | −0.42 / −0.07 / +0.03 / +0.14 / +0.50 | −0.40 / −0.09 / +0.03 / +0.20 / +0.65 |
+| Tasks improved > 0.2 | 13 | 26 |
+| Tasks regressed > 0.2 | 10 | 12 |
+
+The net mean gain is a small residual of large opposing per-task movements —
+generation/judge variance dominates individual tasks.
+
+**D. Gate response on val (v2 run).** Val tasks with reward < 0.3 (gated or
+failed): seed v0 = 4, best v3 = 0.
+
+**E. What the critiques actually talk about.** Keyword counts across all
+gradient critiques in the v2 run: "rule" 45, "courier" 30, "scene" 29,
+"compliance" 9, "judge" 2, "gate" 1. The critic's actionable suggestions
+overwhelmingly target the deterministic rule-compliance slice (word caps,
+exactly-five-keys, person-not-gendered, no meta words) — consistent with
+the cross-scale result that rule compliance is what improved.
+
+**F. Cross-scale transfer.** `tuned_v1` (trained only against v1) gains
++0.031 on the v2 scale but −0.004 on its own v1 scale; `tuned_v2` gains
++0.035 / +0.006 respectively. Both prompts improved the same thing — the
+component that only v2 measures explicitly (rules/structure). If the tuned
+prompts had improved semantic description quality, the v1 scale (0.6 judge
+weight) would have moved too. It did not.
+
+### Follow-ups (in priority order)
+
+1. **Decompose before optimizing further**: from `results/eval_*.json`
+   component details, average rule_compliance, per-field judge scores and
+   gate rates for baseline vs tuned. This tells how much prompt-fixable
+   headroom actually remains (likely little) vs perception-bound headroom.
+2. **If judge_detail is the ceiling, improve the input, not the prompt**:
+   more/denser frames, higher resolution, or a stronger multimodal
+   deployment (`AZURE_OPENAI_DEPLOYMENT`). Prompt tuning cannot make the
+   model see what the frames don't show.
+3. **Reduce noise so APO can climb finer gradients**: `judge_samples: 3` in
+   `reward/v2/config.yaml`; consider caching generations and re-scoring
+   offline to separate reward effects from generation variance.
+4. **Reshape the beam, don't deepen it**: round 2 regressed in both runs, so
+   spend budget on first-round diversity instead — e.g.
+   `--branch-factor 4..6 --beam-rounds 2` — and enlarge
+   `--gradient-batch-size` so critiques see more failure modes (including
+   gate-firing tasks).
+5. **Audit remaining gate-firing test tasks by eye**: if scene/courier are
+   genuinely ambiguous in the frames, that is a data/labeling question for
+   the customer, not a prompt problem.
+6. **Test split is small (30)** — mean SE alone is ~0.02–0.03; resolving
+   0.01-level effects needs a larger test split (see
+   [dataset-sizing.md](dataset-sizing.md)).
