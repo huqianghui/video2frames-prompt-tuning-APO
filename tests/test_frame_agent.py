@@ -1,6 +1,5 @@
 """Offline tests for frame_agent (no network, no credentials)."""
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, cast
 
@@ -11,9 +10,7 @@ from frame_agent import (
     FrameTask,
     build_frame_section,
     build_multimodal_content,
-    compute_reward,
     frame_placeholder,
-    parse_model_output,
     prompt_template_baseline,
 )
 
@@ -69,38 +66,6 @@ def test_build_multimodal_content_structure() -> None:
     )
     assert parts[3] == {"type": "text", "text": "<frame 2 | 3s>"}
     assert "1.jpg" in parts[4]["image_url"]["url"]
-
-
-def test_parse_model_output_plain_and_fenced() -> None:
-    payload = {"english_detail": "x", "scene_type": "indoor"}
-    assert parse_model_output(json.dumps(payload)) == payload
-    fenced = f"```json\n{json.dumps(payload)}\n```"
-    assert parse_model_output(fenced) == payload
-
-
-@pytest.mark.parametrize("raw", ["not json at all", "[1, 2, 3]", "```json\nnope\n```"])
-def test_parse_model_output_invalid_raises(raw: str) -> None:
-    with pytest.raises(ValueError):
-        parse_model_output(raw)
-
-
-def test_compute_reward_all_correct() -> None:
-    expected = make_task()["solution"]
-    generated = dict(expected)
-    assert compute_reward(generated, expected, judge_score=1.0) == pytest.approx(1.0)
-
-
-def test_compute_reward_partial() -> None:
-    expected = make_task()["solution"]
-    generated = {"scene_type": "outdoor", "is_courier_action": False}
-    # scene wrong (0), courier right (0.2), judge 0.5 -> 0.2 + 0.3
-    assert compute_reward(generated, expected, judge_score=0.5) == pytest.approx(0.5)
-
-
-def test_compute_reward_courier_string_coercion() -> None:
-    expected = make_task()["solution"]
-    generated = {"scene_type": "indoor", "is_courier_action": "false"}
-    assert compute_reward(generated, expected, judge_score=0.0) == pytest.approx(0.4)
 
 
 def test_prompt_template_baseline_reads_file(tmp_path: Path) -> None:

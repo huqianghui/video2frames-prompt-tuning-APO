@@ -7,15 +7,18 @@ the customer dataset. Only the instruction text is tuned; the per-video
 Usage:
     python apo_train.py [--beam-rounds 2] [--beam-width 2] [--branch-factor 2]
                         [--gradient-batch-size 4] [--val-batch-size 24] [--smoke]
-                        [--default-poml]
+                        [--default-poml] [--reward-version v2]
 
 `--smoke` shrinks everything to the minimum (1x1x1 beam, tiny batches) to
 verify the end-to-end loop cheaply.
 
-By default APO runs with the project-specific meta-prompts in `prompts/`
-(they encode the reward structure and the frame-placeholder contract; see
-`doc/apo-poml-customization.md`). `--default-poml` falls back to the
-framework's built-in templates.
+By default APO runs with project-specific meta-prompts (see
+`doc/apo-poml-customization.md`): the text-gradient prompt states the
+optimization objective and is owned by the reward version (declared in the
+`apo_meta_prompts` section of `reward/<version>/config.yaml`), while the
+reward-agnostic apply-edit prompt lives in `prompts/` (versions may override
+it the same way). `--default-poml` falls back to the framework's built-in
+templates.
 
 Each run gets a timestamped run ID: logs go to `log/apo_<run_id>.log`, outputs
 (best prompt, score summary, report) to `results/<run_id>/`, and the summary
@@ -46,13 +49,13 @@ from agentlightning.tracer.agentops import ENABLE_AGENTOPS_SERVICE_ENV
 from blob_utils import PROJECT_ROOT, load_env
 from frame_agent import FrameTask, frame_analyzer, load_tasks, prompt_template_baseline
 from generate_report import generate_report
+from reward import REWARD_VERSION_ENV, load_reward, poml_override, resolve_version
 
 logger = logging.getLogger(__name__)
 
 RESULTS_DIR = PROJECT_ROOT / "results"
 LOG_DIR = PROJECT_ROOT / "log"
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
-GRADIENT_POML = PROMPTS_DIR / "text_gradient_video2frames.poml"
 APPLY_EDIT_POML = PROMPTS_DIR / "apply_edit_video2frames.poml"
 
 
@@ -141,6 +144,11 @@ def main() -> None:
         help="Use the framework's built-in APO meta-prompts instead of the project-specific ones in prompts/.",
     )
     parser.add_argument(
+        "--reward-version",
+        default=None,
+        help="Reward version from reward/ (default: REWARD_VERSION env var or v1).",
+    )
+    parser.add_argument(
         "--enable-agentops-service",
         action="store_true",
         help="Upload traces to the AgentOps SaaS (app.agentops.ai). Disabled by default: tracing still runs "
@@ -159,6 +167,12 @@ def main() -> None:
     load_dotenv()
     load_env()
     setup_logging()
+    # Resolve the reward version once and pin it in the environment so forked
+    # runner processes score with the same reward.
+    reward_version = resolve_version(args.reward_version)
+    os.environ[REWARD_VERSION_ENV] = reward_version
+    reward_fn = load_reward(reward_version)
+    logger.info("Reward version: %s", reward_version)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     apo_log_path = LOG_DIR / f"apo_{run_id}.log"
     setup_apo_logger(apo_log_path)
@@ -175,11 +189,22 @@ def main() -> None:
     if args.default_poml:
         logger.info("Using the framework's built-in APO meta-prompts (--default-poml).")
     else:
+        # The text-gradient prompt states the optimization objective, so every
+        # reward version must declare its own in config.yaml; apply_edit is
+        # reward-agnostic and falls back to the shared prompts/ default.
+        gradient_poml = poml_override(reward_version, "text_gradient")
+        if gradient_poml is None:
+            raise SystemExit(
+                f"reward/{reward_version}/config.yaml must declare apo_meta_prompts.text_gradient "
+                "(the text-gradient POML states the objective and is reward-version-specific), "
+                "or pass --default-poml to use the framework's built-in templates."
+            )
+        apply_edit_poml = poml_override(reward_version, "apply_edit") or APPLY_EDIT_POML
         poml_kwargs = {
-            "gradient_prompt_files": [GRADIENT_POML],
-            "apply_edit_prompt_files": [APPLY_EDIT_POML],
+            "gradient_prompt_files": [gradient_poml],
+            "apply_edit_prompt_files": [apply_edit_poml],
         }
-        logger.info("Using project APO meta-prompts: %s, %s", GRADIENT_POML.name, APPLY_EDIT_POML.name)
+        logger.info("Using APO meta-prompts: %s, %s", gradient_poml, apply_edit_poml)
 
     algo = APO[FrameTask](
         AsyncAzureOpenAI(),
@@ -222,6 +247,8 @@ def main() -> None:
             {
                 "run_id": run_id,
                 "best_score": best_score,
+                "reward_version": reward_version,
+                "reward_config": reward_fn.config_dump(),
                 "beam_rounds": args.beam_rounds,
                 "beam_width": args.beam_width,
                 "branch_factor": args.branch_factor,

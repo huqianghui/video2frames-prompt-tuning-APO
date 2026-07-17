@@ -5,7 +5,11 @@
 APO itself is driven by two prompts — *meta-prompts* that operate on the prompt
 being tuned. This document explains what they do, why the framework defaults
 are not enough for this project, and exactly what the project-specific versions
-in [`prompts/`](../prompts) change.
+change. The two files live in different places by reward coupling: the
+text-gradient template states the optimization objective and is owned by each
+reward version (`reward/<version>/text_gradient_video2frames.poml`, declared in
+the version's `apo_meta_prompts` config), while the reward-agnostic apply-edit
+template is shared in [`prompts/`](../prompts).
 
 ## 1. What the two files do
 
@@ -59,7 +63,7 @@ Both files start from `*_variant01.poml` and change only what the table lists:
 
 | File | Change | Purpose |
 | --- | --- | --- |
-| `prompts/text_gradient_video2frames.poml` | Added **Optimization Objective** section: the 5-field valid-JSON contract (else 0), the 0.2/0.2/0.6 reward formula and judge criterion, and "content-filter rejections are not the prompt's fault" | Aim critiques at what actually moves the reward |
+| `reward/v1/text_gradient_video2frames.poml` | Added **Optimization Objective** section: the 5-field valid-JSON contract (else 0), the 0.2/0.2/0.6 reward formula and judge criterion, and "content-filter rejections are not the prompt's fault" (`reward/v2/` ships its own variant describing the v2 objective) | Aim critiques at what actually moves the reward |
 | | Added **Critique Constraints** section: never suggest `<video>`/frame placeholders (runtime appends them), never rename/add/remove the five fields, JSON brace examples are allowed | Keep critiques inside the task's contract |
 | `prompts/apply_edit_video2frames.poml` | Removed "Preserve placeholder variables inside curly brackets" | Our template has no placeholders; the rule is misleading here |
 | | Added three revision rules: keep the 5-field valid-JSON requirement, never add `<video>`/frame placeholders, JSON brace examples allowed | Prevent rewrites from breaking the reward contract |
@@ -72,20 +76,23 @@ identical to the defaults, so the files stay drop-in compatible with
 
 ## 4. Usage
 
-`apo_train.py` uses the project templates **by default**:
+`apo_train.py` uses the project templates **by default**, resolving them from
+the reward version's `apo_meta_prompts` config:
 
 ```bash
-.venv/bin/python apo_train.py                 # project meta-prompts (prompts/)
+.venv/bin/python apo_train.py                 # v1: reward/v1/text_gradient_*.poml + prompts/apply_edit_*.poml
+.venv/bin/python apo_train.py --reward-version v2  # v2's own text-gradient
 .venv/bin/python apo_train.py --default-poml  # framework built-in templates
 ```
 
-`results/summary.json` records which set was used (`"custom_poml"`), so A/B
-comparisons between the two remain traceable. Offline tests in
-`tests/test_apo_train.py` guard the required template slots and the contract
-keywords.
+`results/summary.json` records which set was used (`"custom_poml"` plus the
+full reward config including `apo_meta_prompts`), so A/B comparisons remain
+traceable. Offline tests in `tests/test_apo_train.py` guard the required
+template slots and the contract keywords.
 
 If the reward changes after the customer conversation
 ([reward-design.md](reward-design.md)) — e.g. new weights or per-field judge
-scores — update the **Optimization Objective** section of the gradient template
-to match, or the search will optimize against a stale description of the
-reward.
+scores — that is a new reward version, and its **Optimization Objective**
+section must ship with it (`reward/<version>/text_gradient_*.poml`);
+`apo_train.py` refuses to run a version that does not declare one, so the
+search can never optimize against a stale description of the reward.

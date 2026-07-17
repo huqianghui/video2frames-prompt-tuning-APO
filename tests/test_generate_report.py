@@ -137,6 +137,7 @@ def test_generate_tree_from_report(tmp_path: Path) -> None:
     generate_report(log_path=make_log(tmp_path), output_dir=tmp_path / "results")
     report_md = tmp_path / "results" / "report.md"
     tree_md = generate_tree_from_report(report_md)
+    assert tree_md is not None
     assert tree_md == tmp_path / "results" / "tree.md"  # defaults to the report's directory
     tree = tree_md.read_text(encoding="utf-8")
     assert "v0 (seed) | val 0.37" in tree

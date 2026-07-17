@@ -3,8 +3,11 @@
 [English](apo-poml-customization.md) | **中文**
 
 APO 本身也由两个 prompt 驱动——作用于"被调优 prompt"之上的*元 prompt*。本文
-说明它们各自的作用、为什么框架默认版对本项目不够用，以及
-[`prompts/`](../prompts) 下项目定制版到底改了什么。
+说明它们各自的作用、为什么框架默认版对本项目不够用，以及项目定制版到底改了
+什么。两个文件按与 reward 的耦合程度放在不同位置：text-gradient 模板描述
+优化目标，归各 reward 版本所有（`reward/<version>/text_gradient_video2frames.poml`，
+在版本 `config.yaml` 的 `apo_meta_prompts` 段声明）；与 reward 无关的
+apply-edit 模板共享放在 [`prompts/`](../prompts)。
 
 ## 1. 这两个文件的作用
 
@@ -51,7 +54,7 @@ APO beam search 的每一轮扩展都分两步 LLM 调用完成
 
 | 文件 | 改动 | 目的 |
 | --- | --- | --- |
-| `prompts/text_gradient_video2frames.poml` | 新增 **Optimization Objective** 一节：5 字段合法 JSON 契约（否则 0 分）、0.2/0.2/0.6 reward 公式与 judge 标准、"内容过滤器拒绝与 prompt 无关" | 让批评瞄准真正影响 reward 的方向 |
+| `reward/v1/text_gradient_video2frames.poml` | 新增 **Optimization Objective** 一节：5 字段合法 JSON 契约（否则 0 分）、0.2/0.2/0.6 reward 公式与 judge 标准、"内容过滤器拒绝与 prompt 无关"（`reward/v2/` 自带描述 v2 目标的变体） | 让批评瞄准真正影响 reward 的方向 |
 | | 新增 **Critique Constraints** 一节：不许建议加 `<video>`/帧占位符（运行时追加）、不许改动 5 个字段名、允许带花括号的 JSON 示例 | 把批评限制在任务契约之内 |
 | `prompts/apply_edit_video2frames.poml` | 删掉 "Preserve placeholder variables inside curly brackets" | 我们的模板没有占位符，这条在此只会误导 |
 | | 新增三条改写规则：必须保留 5 字段合法 JSON 要求、不许加 `<video>`/帧占位符、允许花括号 JSON 示例 | 防止改写破坏 reward 契约 |
@@ -63,17 +66,21 @@ APO beam search 的每一轮扩展都分两步 LLM 调用完成
 
 ## 4. 使用方式
 
-`apo_train.py` **默认**使用项目定制模板：
+`apo_train.py` **默认**使用项目定制模板，并按 reward 版本的
+`apo_meta_prompts` 配置解析：
 
 ```bash
-.venv/bin/python apo_train.py                 # 项目元 prompt（prompts/）
-.venv/bin/python apo_train.py --default-poml  # 框架内置模板
+.venv/bin/python apo_train.py                      # v1：reward/v1/text_gradient_*.poml + prompts/apply_edit_*.poml
+.venv/bin/python apo_train.py --reward-version v2  # v2 自己的 text-gradient
+.venv/bin/python apo_train.py --default-poml       # 框架内置模板
 ```
 
-`results/summary.json` 会记录本次用的是哪套模板（`"custom_poml"` 字段），方便
-两套模板之间做可追溯的 A/B 对比。`tests/test_apo_train.py` 中的离线测试守护
-模板必需的槽位和契约关键词。
+`results/summary.json` 会记录本次用的是哪套模板（`"custom_poml"` 字段，外加
+含 `apo_meta_prompts` 的完整 reward 配置），方便做可追溯的 A/B 对比。
+`tests/test_apo_train.py` 中的离线测试守护模板必需的槽位和契约关键词。
 
 如果与客户沟通后 reward 发生变化（见 [reward-design.zh.md](reward-design.zh.md)），
-例如调整权重或改成按字段打分，请同步更新 gradient 模板的
-**Optimization Objective** 一节——否则搜索会按过期的 reward 描述做优化。
+例如调整权重或改成按字段打分，那就是一个新的 reward 版本，其
+**Optimization Objective** 必须随版本一起提供
+（`reward/<version>/text_gradient_*.poml`）——版本没有声明时 `apo_train.py`
+直接报错拒跑，搜索永远不会按过期的 reward 描述做优化。

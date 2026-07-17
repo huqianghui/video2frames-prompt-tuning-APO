@@ -113,6 +113,12 @@ variables must be added to the `.env` (or exported):
 # 6. Compare baseline vs tuned prompt on the held-out test split.
 .venv/bin/python evaluate.py --name baseline
 .venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned
+
+# 7. (Optional) Compare reward versions: score the same prompt under v1 and v2,
+#    then join the results task-by-task.
+.venv/bin/python evaluate.py --name baseline_v1 --reward-version v1
+.venv/bin/python evaluate.py --name baseline_v2 --reward-version v2
+.venv/bin/python compare_rewards.py results/eval_baseline_v1.json results/eval_baseline_v2.json
 ```
 
 AgentOps SaaS upload is **disabled by default** (spans are still traced
@@ -167,32 +173,98 @@ re-verify first.
 
 ## Reward
 
-Each rollout is scored with a hybrid reward in `[0, 1]`:
+The reward is the part of this project that evolves most, so it lives in a
+standalone versioned package: `reward/` with one subfolder per version
+(`reward/v1/`, `reward/v2/`, ...), each containing its implementation
+(`reward.py`), its tunable parameters (`config.yaml`), and optionally its own
+APO meta-prompt overrides (`*.poml`). Every version implements the same
+`RewardFunction` interface (`reward/base.py`), so the agent, APO training, and
+evaluation are version-agnostic.
+
+**Selecting a version:** pass `--reward-version vN` to `frame_agent.py`,
+`apo_train.py`, or `evaluate.py`, or set the `REWARD_VERSION` environment
+variable (explicit flag > env var > default `v1`). `apo_train.py` pins the
+resolved version in the environment so forked runner processes score with the
+same reward, and records it (plus the full reward config) in the run's
+`summary.json`.
+
+**v1 (default)** — hybrid reward in `[0, 1]`:
 
 - `0.2` × exact match of `scene_type`
 - `0.2` × exact match of `is_courier_action`
 - `0.6` × LLM-judge semantic score over `english_detail` / `brief` / `title`
-- Output that is not a valid JSON object scores `0`.
-- Requests rejected by the Azure OpenAI content safety filter score `0` — the
-  rejection depends only on the input frames, so it is identical for every
-  candidate prompt. A probe of the default 94-task sample found ~3% blocked
-  (not only `ucf_crime`; some `Charades` videos trigger it too). Sample with
-  `prepare_data.py --probe-content-filter` to exclude blocked videos up front
-  (the reward-0 fallback still covers anything that slips through), or audit
-  existing splits with `probe_content_filter.py`.
 
-See [doc/reward-design.md](doc/reward-design.md) for the design rationale, the
-assumptions that should be confirmed with the customer before a large-scale
-run, and the suggested next steps for that conversation.
+**v2 (upgraded hybrid reward)** — per-field judges, mechanical rule
+compliance, and multiplicative gates (redesigned following the SkillOpt-04
+analysis article):
+
+- Soft score: `0.45 × judge_detail + 0.20 × judge_brief + 0.10 × judge_title +
+  0.25 × rule_compliance`, where `rule_compliance` is the mean of deterministic
+  0/1 checks derived from the baseline prompt's hard style rules (exact 5 JSON
+  keys, word limits, "person" instead of gendered words, no camera/frame/
+  timestamp mentions, Non-Notable trigger consistency).
+- Hard gates multiply the soft score: scene error × 0.5, courier false positive
+  × 0.3, courier false **negative** × 0.2 (missing a real courier is the most
+  expensive mistake; the asymmetry is a customer assumption to confirm).
+- Optional judge-noise reduction: set `judge_samples: 3` (and a non-zero
+  `judge_temperature`) in `reward/v2/config.yaml` to take the median of
+  repeated judge calls.
+- `reward/v2/text_gradient_video2frames.poml` describes the v2 objective to
+  the APO optimizer (each version owns its text-gradient meta-prompt; see
+  "APO Meta-Prompts" below).
+
+Both versions score invalid-JSON output as `0`. Requests rejected by the Azure
+OpenAI content safety filter also score `0` — the rejection depends only on
+the input frames, so it is identical for every candidate prompt. A probe of
+the default 94-task sample found ~3% blocked (not only `ucf_crime`; some
+`Charades` videos trigger it too). Sample with `prepare_data.py
+--probe-content-filter` to exclude blocked videos up front (the reward-0
+fallback still covers anything that slips through), or audit existing splits
+with `probe_content_filter.py`.
+
+**Comparing versions:** evaluate the same prompt under both rewards with
+distinct `--name` labels, then join the per-task results:
+
+```bash
+.venv/bin/python evaluate.py --name baseline_v1 --reward-version v1
+.venv/bin/python evaluate.py --name baseline_v2 --reward-version v2
+.venv/bin/python compare_rewards.py results/eval_baseline_v1.json results/eval_baseline_v2.json
+```
+
+`compare_rewards.py` prints a per-task delta table plus per-family and overall
+means, and writes the joined result next to the inputs. Measured results
+(baseline calibration, interpretation, and the 2×2 end-to-end comparison plan)
+are logged in [doc/reward-comparison.md](doc/reward-comparison.md).
+
+**Adding a new version:** copy an existing folder to `reward/v3/`, adjust
+`config.yaml` and `reward.py` (keep the `RewardFunction` interface and the
+`get_reward()` factory), and update its `text_gradient_*.poml` to state the new
+objective (declared in `apo_meta_prompts`). It is picked up automatically by
+`--reward-version v3`.
+
+See [doc/reward-design.md](doc/reward-design.md) for the v1 design rationale
+and the assumptions that should be confirmed with the customer before a
+large-scale run; the v2 design follows the SkillOpt-04 article
+([SkillOpt 系列 04](https://github.com/huqianghui/mindforge/blob/main/Notes/AI/SkillOpt/SkillOpt%E7%B3%BB%E5%88%9704%EF%BC%9AAPO%C3%97SkillOpt%E8%81%94%E5%90%88%E5%B1%95%E6%9C%9B%E2%80%94%E2%80%94%E5%85%88%E6%8E%A2%E7%B4%A2%E5%90%8E%E7%B2%BE%E4%BF%AE%E7%9A%84%E4%B8%A4%E6%AE%B5%E5%BC%8F%E7%AE%A1%E9%81%93%E4%B8%8E%E9%80%89%E5%9E%8B%E7%AE%97%E8%B4%A6%E6%96%B9%E6%B3%95.md)).
 
 ## APO Meta-Prompts
 
 APO itself is driven by two meta-prompts: a *text gradient* template that
 critiques the current prompt from rollout traces, and an *apply edit* template
-that rewrites it. `apo_train.py` uses the project-specific versions in
-`prompts/` **by default** — they teach the optimizer the reward structure
-(5-field JSON contract, 0.2/0.2/0.6 weights, content-filter rejections are not
-the prompt's fault) and forbid rewrites that add frame/`<video>` placeholders.
+that rewrites it. Both are declared per reward version in the
+`apo_meta_prompts` section of `reward/<version>/config.yaml` (`null` = use the
+shared default in `prompts/`, a filename = use the customized file in the
+version folder), and they split by reward coupling:
+
+- **text gradient** states the optimization objective (the reward formula), so
+  it is **owned by the reward version** — every version must declare one
+  (`reward/v1/text_gradient_video2frames.poml` describes the 0.2/0.2/0.6
+  objective, `reward/v2/...` the per-field/gated one); `apo_train.py` refuses
+  to run a version without it.
+- **apply edit** only encodes reward-independent invariants (5-field JSON
+  contract, no frame/`<video>` placeholders), so the shared
+  `prompts/apply_edit_video2frames.poml` is the default for all versions.
+
 Pass `--default-poml` to fall back to the framework's built-in templates. See
 [doc/apo-poml-customization.md](doc/apo-poml-customization.md) for what the two
 files do and the exact changes vs the defaults.
@@ -284,13 +356,16 @@ Online (requires blob access + Azure OpenAI):
 | `blob_utils.py` | Azure Blob helpers: env loading, video→frame-prefix mapping, frame listing, SAS URLs. |
 | `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`. Stratifies jointly by (family, `is_courier_action`) with a val courier-positive floor (`--val-courier-min`); `--freeze-test` regrows train/val without touching the test split; `--probe-content-filter` skips videos blocked by the content safety filter. |
 | `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
-| `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, hybrid reward, debug CLI. |
-| `apo_train.py` | APO training entry point; each run writes `log/apo_<run_id>.log` and `results/<run_id>/` (`best_prompt.txt`, `summary.json` with a data fingerprint, run report), and repoints `results/latest`. Uses the `prompts/` meta-prompts by default (`--default-poml` reverts to the framework templates). |
-| `prompts/text_gradient_video2frames.poml` / `prompts/apply_edit_video2frames.poml` | Project-specific APO meta-prompts encoding the reward structure and the frame-placeholder contract. |
+| `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, debug CLI; scoring is delegated to the versioned `reward/` package. |
+| `reward/` | Versioned reward package: `base.py` (shared `RewardFunction` interface, JSON parsing, judge helpers), `v1/` (hybrid 0.2/0.2/0.6 reward), `v2/` (upgraded hybrid reward: per-field judges + rule compliance + gates). Each version has `reward.py` + `config.yaml` + its own text-gradient POML. Select via `--reward-version` / `REWARD_VERSION`. |
+| `compare_rewards.py` | Joins two `evaluate.py` result files task-by-task (e.g. the same prompt under reward v1 vs v2) and prints per-task deltas plus per-family/overall means. |
+| `apo_train.py` | APO training entry point; each run writes `log/apo_<run_id>.log` and `results/<run_id>/` (`best_prompt.txt`, `summary.json` with a data fingerprint, run report), and repoints `results/latest`. Meta-prompts come from the reward version's `apo_meta_prompts` config (`--default-poml` reverts to the framework templates). |
+| `prompts/apply_edit_video2frames.poml` | Shared reward-agnostic APO apply-edit meta-prompt (5-field JSON contract, frame-placeholder ban). The reward-specific text-gradient meta-prompt lives in each `reward/<version>/`. |
 | `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round), `tree.md` (compact version tree: derivation, scores, beam survival, winner), and — when the best prompt beats the seed — `diffs.md` (per-step derivation diffs plus overall seed → best) under `--output-dir`. |
-| `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json`. |
+| `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json` (records the reward version; `--reward-version` selects it). |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
+| `doc/reward-comparison.md` / `doc/reward-comparison.zh.md` | Measured v1-vs-v2 comparison log: baseline scale calibration on the test split, interpretation, and the 2×2 end-to-end comparison playbook (English/Chinese). |
 | `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | What the APO meta-prompts do, why they are customized, and the exact changes vs the framework defaults (English/Chinese). |
 | `doc/dashboard.md` / `doc/dashboard.zh.md` | What the Agent-Lightning dashboard is, why the "Dashboard directory not found" error is harmless, and how to build/access the UI (English/Chinese). |
 | `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | Beam hyperparameters (rounds/width/branch-factor) with a tuning decision table, concurrency model, run-time/quota formulas, and how to choose `--n-runners` and batch sizes (English/Chinese). |

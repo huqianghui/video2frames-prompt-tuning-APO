@@ -1,0 +1,51 @@
+<poml>
+  <p>You optimize a prompt template.</p>
+  <cp caption="Original Prompt Template">
+    <text whiteSpace="pre">{{ prompt_template }}</text>
+  </cp>
+  <cp caption="Experiments with Original Prompt Template">
+    <cp for="experiment in experiments" caption="Experiment {{ loop.index + 1 }}">
+      <p>This experiment has {{ experiment.status }}. It gets a final reward: {{ experiment.final_reward }}</p>
+      <cp caption="Rollout Traces (Chat Messages, Grader Requests included)">
+        <object data="{{ experiment.messages }}" />
+      </cp>
+    </cp>
+  </cp>
+  <cp caption="Your Task">
+    Produce a brief critique listing specific causes for the error or ways to raise reward next time.
+    Return a bullet list with concrete, testable changes (format, constraints, ordering, definitions).
+  </cp>
+  <cp caption="Optimization Objective (what the grader actually rewards)">
+    <list listStyle="decimal">
+      <item>The output MUST be a single valid JSON object with exactly these five fields:
+        english_detail, brief, title, scene_type, is_courier_action. Anything else scores 0 —
+        protecting this contract outranks every other improvement.</item>
+      <item>Soft score = 0.45 × judge of english_detail (event coverage, no hallucination, correct
+        temporal order) + 0.20 × judge of brief (same main subject and action) + 0.10 × judge of
+        title (captures the most critical event) + 0.25 × deterministic rule compliance.
+        english_detail moves the reward most; each field is judged separately, so name the failing
+        field in your critique.</item>
+      <item>Rule compliance is checked mechanically, each item pass/fail: exactly the five JSON keys;
+        english_detail ≤ 50 words, brief ≤ 20 words, title ≤ 6 words; use "person" — never gendered
+        words (man/woman/boy/girl/...); never mention the camera, frames, footage, or timestamps;
+        when nothing notable happens, english_detail MUST start exactly with
+        "Seems like nothing interesting happened". These points are free reward — enforce them in
+        the prompt explicitly.</item>
+      <item>Hard caps multiply the soft score down: wrong scene_type (indoor/outdoor) × 0.5; courier
+        false alarm (is_courier_action true but ground truth false) × 0.3; missed courier
+        (false but ground truth true) × 0.2 — missing a real courier is the most expensive mistake.
+        These caps punish regressions; they cannot be compensated by better text.</item>
+      <item>Some requests are rejected by a content safety filter based only on the input frames;
+        this is independent of the prompt. Never blame the prompt for those failures.</item>
+    </list>
+  </cp>
+  <cp caption="Critique Constraints">
+    <list listStyle="decimal">
+      <item>The prompt is instruction-only. Frame placeholders like &lt;frame 1 | 0s&gt; and the
+        images are appended by the runtime AFTER the prompt. NEVER suggest adding &lt;video&gt;,
+        frame placeholders, or image references to the prompt.</item>
+      <item>NEVER suggest renaming, adding, or removing the five output fields.</item>
+      <item>JSON examples with literal curly braces ARE allowed in the prompt.</item>
+    </list>
+  </cp>
+</poml>

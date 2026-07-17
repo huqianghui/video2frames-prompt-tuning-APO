@@ -9,10 +9,22 @@ current reward is defined, why, which parts are assumptions that only the
 customer can confirm, and how to run that conversation before a large-scale
 training run.
 
-## 1. Current definition
+> **Versioning note:** this document describes **reward v1**, the original
+> hybrid reward. The reward now lives in the versioned `reward/` package
+> (select with `--reward-version` / `REWARD_VERSION`); v1 is the default and
+> stays byte-equivalent to the original implementation so historical runs
+> remain comparable. **Reward v2** (`reward/v2/`) upgrades the hybrid design
+> per the SkillOpt-04 analysis article — per-field judges, deterministic rule
+> compliance, and multiplicative gates for scene/courier errors; several of
+> the open questions below (per-field judging, asymmetric courier costs) are
+> implemented there as configurable assumptions to confirm. See the README's
+> "Reward" section for the v2 formula, version selection, and the
+> `compare_rewards.py` comparison workflow.
 
-Implemented in `frame_agent.py` (weights at the top, scoring in
-`compute_reward`, judge in `judge_text_fields`):
+## 1. Current definition (v1)
+
+Implemented in `reward/v1/` (weights and judge prompt in `config.yaml`,
+scoring in `reward.py`):
 
 ```
 reward = 0.2 × exact match of scene_type          (case-insensitive)
@@ -80,11 +92,11 @@ check in parallel.
    [dataset-sizing.md](dataset-sizing.md), default 40/24/30 splits) — it
    measures reward noise σ and produces the example outputs for step 1, and
    nothing in it is wasted even if the weights change later.
-3. **Fold the answers back in.** Weight changes are three constants
-   (`SCENE_WEIGHT` / `COURIER_WEIGHT` / `JUDGE_WEIGHT` in `frame_agent.py`);
-   per-field judging or asymmetric courier scoring are small, local edits to
-   `judge_text_fields` / `compute_reward` with matching unit tests in
-   `tests/test_frame_agent.py`.
+3. **Fold the answers back in.** Weight changes are three lines in
+   `reward/v1/config.yaml` (`scene_weight` / `courier_weight` /
+   `judge_weight`); per-field judging and asymmetric courier scoring are
+   already implemented in `reward/v2/` (weights and gate ratios in
+   `reward/v2/config.yaml`), with unit tests in `tests/test_reward.py`.
 4. **Only then run the full APO ladder** (Stage 2+). Changing the reward after
    a big run means paying for the run again — the reward conversation is the
    cheapest insurance in the whole project.

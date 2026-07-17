@@ -1,0 +1,36 @@
+# Reward v1: the original hybrid verification reward.
+# reward = scene_weight x exact(scene_type) + courier_weight x exact(is_courier_action)
+#        + judge_weight x combined LLM-judge score over english_detail/brief/title.
+scene_weight: 0.2
+courier_weight: 0.2
+judge_weight: 0.6
+
+# The JUDGE_MODEL environment variable overrides judge_model.
+judge_model: gpt-4.1-mini
+judge_temperature: 0.0
+
+# APO meta-prompts (POML) used when training with this reward version.
+#   null       -> use the shared reward-agnostic default in prompts/<name>_video2frames.poml
+#   <filename> -> use the customized file at reward/v1/<filename>
+# The text-gradient prompt states the optimization objective (the reward formula), so it is
+# version-owned; apply_edit only encodes reward-independent invariants and stays shared.
+apo_meta_prompts:
+  text_gradient: text_gradient_video2frames.poml # customized: reward/v1/text_gradient_video2frames.poml
+  apply_edit: null # default: prompts/apply_edit_video2frames.poml
+
+# str.format placeholders: generated_detail/brief/title, expected_detail/brief/title.
+judge_prompt: |
+  You are a strict grader of video event descriptions.
+  Compare the generated fields against the expected ground truth. Judge whether they describe the same subjects and actions; wording may differ.
+
+  Generated:
+  - english_detail: {generated_detail}
+  - brief: {generated_brief}
+  - title: {generated_title}
+
+  Expected:
+  - english_detail: {expected_detail}
+  - brief: {expected_brief}
+  - title: {expected_title}
+
+  Score the semantic match on a 0-1 scale. Be critical; partial credit is allowed.

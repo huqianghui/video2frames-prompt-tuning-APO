@@ -1,0 +1,85 @@
+# Reward v2: the upgraded hybrid reward ("two ledgers" design, per the SkillOpt-04 analysis article).
+#
+#   soft_opt = 0.45 x judge_detail       (english_detail: event coverage / no hallucination / temporal order)
+#            + 0.20 x judge_brief        (subject + action accuracy, <= 20 words)
+#            + 0.10 x judge_title        (captures the most critical event, <= 6 words)
+#            + 0.25 x rule_compliance    (deterministic regex/word-count checks, zero noise)
+#
+#   Multiplicative gates (caps, not weights):
+#     scene_type wrong          -> soft_opt x= 0.5
+#     courier false positive    -> soft_opt x= 0.3
+#     courier false negative    -> soft_opt x= 0.2   (asymmetric; ratio to be confirmed with the customer)
+#     invalid JSON              -> 0
+#
+# This reward feeds the training loop only. Reward v1 stays untouched as the
+# verification/faceoff metric so historical runs remain comparable.
+weights:
+  judge_detail: 0.45
+  judge_brief: 0.20
+  judge_title: 0.10
+  rule_compliance: 0.25
+
+gates:
+  scene_error: 0.5
+  courier_false_positive: 0.3
+  courier_false_negative: 0.2
+
+# The JUDGE_MODEL environment variable overrides judge_model.
+judge_model: gpt-4.1-mini
+judge_temperature: 0.0
+# Set judge_samples: 3 (with judge_temperature > 0, e.g. 0.3) to score each field
+# three times and take the median — ~sqrt(3) judge-noise reduction for 3x judge cost.
+judge_samples: 1
+
+# APO meta-prompts (POML) used when training with this reward version.
+#   null       -> use the shared default in prompts/<name>_video2frames.poml
+#   <filename> -> use the customized file at reward/v2/<filename>
+# The text-gradient prompt is customized because it must describe the v2 objective
+# (weights + gates above); the apply-edit prompt is objective-agnostic, so the
+# shared default is fine.
+apo_meta_prompts:
+  text_gradient: text_gradient_video2frames.poml # customized: reward/v2/text_gradient_video2frames.poml
+  apply_edit: null # default: prompts/apply_edit_video2frames.poml
+
+# str.format placeholders: {generated}, {expected} (the single field under judgment).
+judge_prompts:
+  detail: |
+    You are a strict grader of video event descriptions.
+    Compare the generated english_detail against the expected ground truth on three aspects:
+    1. Event coverage: every subject and action in the expected text is present in the generated text.
+    2. No hallucination: the generated text describes nothing that the expected text does not support.
+    3. Temporal order: events appear in the same chronological order.
+
+    Generated english_detail: {generated}
+    Expected english_detail: {expected}
+
+    Score the match on a 0-1 scale. Be critical; partial credit is allowed.
+  brief: |
+    You are a strict grader of short video event summaries.
+    Judge whether the generated brief captures the same main subject and main action as the expected brief; wording may differ. Penalize a missing subject, a wrong action, or extra invented content.
+
+    Generated brief: {generated}
+    Expected brief: {expected}
+
+    Score the match on a 0-1 scale. Be critical; partial credit is allowed.
+  title: |
+    You are a strict grader of push-notification titles for video events.
+    Judge whether the generated title captures the most critical event of the expected title; wording may differ.
+
+    Generated title: {generated}
+    Expected title: {expected}
+
+    Score the match on a 0-1 scale. Be critical; partial credit is allowed.
+
+# Deterministic style rules taken from the customer's baseline instruction
+# (initial.md): the prompt has always required these, reward v1 never measured them.
+rules:
+  required_keys: [english_detail, brief, title, scene_type, is_courier_action]
+  max_words:
+    english_detail: 50
+    brief: 20
+    title: 6
+  forbidden_gender_words:
+    [man, men, woman, women, male, female, boy, boys, girl, girls, lady, ladies, gentleman, gentlemen, guy, guys]
+  forbidden_meta_words: [camera, frame, frames, timestamp, timestamps, footage]
+  non_notable_prefix: "Seems like nothing interesting happened"
