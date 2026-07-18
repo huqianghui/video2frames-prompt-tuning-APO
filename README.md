@@ -3,7 +3,8 @@
 **English** | [中文](README.zh.md)
 
 Tune the fixed instruction prompt of a video-surveillance frame-analysis task with
-[Agent-Lightning](../README.md)'s APO (Automatic Prompt Optimization) algorithm.
+[Agent-Lightning](https://github.com/huqianghui/agent-lightning)'s APO (Automatic
+Prompt Optimization) algorithm.
 
 The customer dataset `original_data/qwen_0318_swift_task.json` contains 5850 video analysis tasks
 (video → structured JSON with `english_detail` / `brief` / `title` / `scene_type` /
@@ -28,11 +29,14 @@ part** of the prompt; the frame placeholder section is rebuilt per task at runti
 
 ## Installation
 
-This project must run against agent-lightning **0.3.1 built from this repository's
-source** (the PyPI 0.3.0 release is missing required functionality):
+This project must run against agent-lightning **0.3.1 built from the
+[huqianghui/agent-lightning](https://github.com/huqianghui/agent-lightning) fork**
+(the PyPI 0.3.0 release is missing required functionality, and the fork carries
+additional logging/test changes). `requirements.txt` pins the fork by commit:
 
 ```bash
-cd video2frames-prompt-tuning
+git clone https://github.com/huqianghui/video2frames-prompt-tuning-APO.git
+cd video2frames-prompt-tuning-APO
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -c "import agentlightning; print(agentlightning.__version__)"  # expect 0.3.1

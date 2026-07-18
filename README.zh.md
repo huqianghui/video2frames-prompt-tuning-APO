@@ -2,8 +2,9 @@
 
 [English](README.md) | **中文**
 
-使用 [Agent-Lightning](../README.md) 的 APO（Automatic Prompt Optimization，自动
-Prompt 优化）算法，调优视频监控帧分析任务中固定不变的指令 prompt。
+使用 [Agent-Lightning](https://github.com/huqianghui/agent-lightning) 的 APO
+（Automatic Prompt Optimization，自动 Prompt 优化）算法，调优视频监控帧分析
+任务中固定不变的指令 prompt。
 
 客户数据集 `original_data/qwen_0318_swift_task.json` 包含 5850 条视频分析任务
 （视频 → 结构化 JSON，字段为 `english_detail` / `brief` / `title` / `scene_type` /
@@ -25,11 +26,13 @@ APO **只调优 prompt 中固定的指令部分**；帧占位符段由 agent 在
 
 ## 安装
 
-本项目必须运行在**从本仓库源码构建的 agent-lightning 0.3.1** 上（PyPI 的 0.3.0
-版本缺少所需功能）：
+本项目必须运行在**从 [huqianghui/agent-lightning](https://github.com/huqianghui/agent-lightning)
+fork 源码构建的 agent-lightning 0.3.1** 上（PyPI 的 0.3.0 版本缺少所需功能，
+且该 fork 含额外的日志与测试改动）。`requirements.txt` 已按 commit 固定该 fork：
 
 ```bash
-cd video2frames-prompt-tuning
+git clone https://github.com/huqianghui/video2frames-prompt-tuning-APO.git
+cd video2frames-prompt-tuning-APO
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -c "import agentlightning; print(agentlightning.__version__)"  # 应输出 0.3.1
