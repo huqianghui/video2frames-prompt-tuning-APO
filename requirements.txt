@@ -5,7 +5,7 @@
 # litellm is pinned to the version resolved in the fork's uv.lock; newer sdists
 # require a Rust toolchain to build, which fails on plain pip installs.
 litellm[proxy]==1.90.0
-agentlightning[apo] @ git+https://github.com/huqianghui/agent-lightning.git@59dbd949e94a40432c172741759a00886be131c1
+agentlightning[apo] @ git+https://github.com/huqianghui/agent-lightning.git@9d1a546118a2ac43e5c29c920cc8227a0d5cccac
 
 azure-storage-blob
 python-dotenv
