@@ -100,3 +100,78 @@ check in parallel.
 4. **Only then run the full APO ladder** (Stage 2+). Changing the reward after
    a big run means paying for the run again — the reward conversation is the
    cheapest insurance in the whole project.
+
+## 5. Why v2 gates are multiplicative (design rationale)
+
+Reward v2 pulls the scene/courier errors out of the weighted sum and applies
+them as multiplicative gates on the soft score (`scene_error: ×0.5`,
+`courier_false_positive: ×0.3`, `courier_false_negative: ×0.2`). Three
+independent reasons, recorded here because each answers a natural objection.
+
+### 5.1 Structure, not weight: additive errors have a fixed price
+
+Under an additive weight the cost of a wrong classification is a constant —
+the weight itself — regardless of how good the rest of the output is. With
+v1's 0.2 courier weight, perfect prose + wrong courier flag still scores 0.8;
+raising the weight only raises the price, it never removes the trade — there
+is always a region where "good text + wrong call" outscores "plain text +
+right call" (and a higher classification weight dilutes the semantic signal
+APO needs for text improvements). Multiplicative gates change the structure:
+
+| Soft score | Additive (weight 0.2) | Multiplicative (×0.3) |
+| --- | --- | --- |
+| 0.9 (strong prose) | 0.9 − 0.2 = 0.7 | 0.9 × 0.3 = **0.27** |
+| 0.5 (plain prose) | 0.5 − 0.2 = 0.3 | 0.5 × 0.3 = 0.15 |
+
+Two properties fall out: (a) **ordering** — a gated output (≤ 0.3) almost
+never outscores an ungated one with decent text, so "getting the call right"
+becomes a precondition for the high-score region rather than an optional
+bonus, which is exactly what beam selection should see; (b) **confidently
+wrong costs more** — a fluent, detailed but wrong description loses more
+absolute score (0.9 → 0.27) than a vague wrong one (0.5 → 0.15), matching
+the business reality that convincing errors are the dangerous ones.
+
+Why a multiplier instead of zero: reward 0 destroys information — the critic
+cannot distinguish "invalid JSON" from "great text, wrong scene", and within
+the gated group better text should still rank higher so optimization pressure
+survives on both axes. Hard zero is reserved for genuinely information-free
+outputs (invalid JSON, content-filter rejections).
+
+### 5.2 Class imbalance: rare positives are statistically invisible under addition
+
+Courier positives are a small fraction of the data (hence the
+`--val-courier-min 0.15` sampling floor). At val = 100 with ~15 positives and
+an additive weight of 0.2: the ~85 negatives are trivially correct (answer
+`false` and collect the weight), so the mean-reward difference between a
+prompt that misses *every* courier and one that catches *all* of them is only
+0.15 × 0.2 = **0.03** — the same order as the val SE (≈ 0.012), borderline
+invisible to beam selection. The multiplicative gate raises the per-task
+penalty: one missed courier drops that task ≈ 0.56 (e.g. 0.70 → 0.14), so the
+same all-miss vs all-catch contrast becomes 0.15 × 0.56 ≈ **0.084** — about
+7 SE, clearly visible. The project therefore fights imbalance on two legs:
+the sampling floor guarantees the *count* of positives in the split, and the
+gate guarantees each one carries enough *effect size* to register in the
+mean. The harshest multiplier on false negatives (×0.2) follows the same
+logic — positives are scarce, so each miss must be expensive.
+
+### 5.3 Gates are partly perception-bound — and still earn their place
+
+Whether the model *can see* the courier in the frames is perception, which no
+prompt edit reaches. The gates are still justified because the reward serves
+two roles:
+
+- **As the ruler** (model comparison, final acceptance): the gate is exactly
+  what makes a model that detects couriers better *score* better. A reward
+  without the business-critical error would rank models wrong. Gate firing
+  rates per run are now in `component_stats` of `results/eval_<name>.json` —
+  if the rate drops when only the deployment changes, that is the perception
+  evidence.
+- **As the optimization target**: the decision splits into *seeing* (
+  perception, prompt-unreachable) and *deciding* (how uncertain evidence is
+  converted into true/false — a threshold the prompt *can* move, e.g. by
+  defining "courier action" precisely or stating "when unsure, prefer true;
+  misses cost most"). The FN < FP asymmetry is the signal telling APO which
+  direction to push that threshold.
+- **As a Stage-4 probe**: tasks that keep firing gates despite a strong model
+  are the ones to audit with the customer for genuine frame ambiguity (see
+  [optimization-stages.md](optimization-stages.md)).
