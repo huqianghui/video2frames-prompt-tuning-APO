@@ -55,6 +55,11 @@ Blob 存储配置从仓库根目录的 `.env` 读取
 
 ## 工作流
 
+> **从这里开始：** 运行任何命令之前，先读
+> [doc/optimization-stages.zh.md](doc/optimization-stages.zh.md)，定位自己
+> 处于哪个优化阶段（测量 / 模型 / prompt / 数据）、该拉哪个杠杆——下面的
+> 命令是*操作*，那份指南是*策略*。
+
 ```bash
 # 1. 准备数据集（分层采样；从 Azure 解析帧 blob）。
 #    采样与切分按 (family, is_courier_action) 联合分层，每个 split 都还原
@@ -317,6 +322,7 @@ macOS/Windows 的 shm 回退模式下根本没有 dashboard。
 | `prompts/apply_edit_video2frames.poml` | 共享的、与 reward 无关的 APO apply-edit 元 prompt（5 字段 JSON 契约、禁止帧占位符）。reward 相关的 text-gradient 元 prompt 在各 `reward/<version>/` 目录下。 |
 | `generate_report.py` | 把 APO 运行日志（`--log log/apo_<run_id>.log`）解析为 `report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）、`tree.md`（精简版本树：派生关系、分数、beam 存活、胜出版本），以及（best prompt 赢过种子时）`diffs.md`（派生链每步 diff + 种子 → best 整体 diff），写入 `--output-dir`。 |
 | `evaluate.py` | 在指定数据集 split 上评估一个 prompt 文件；写 `results/eval_<name>.json`（记录 reward 版本；用 `--reward-version` 选择）。 |
+| `doc/optimization-stages.md` / `doc/optimization-stages.zh.md` | **入门策略指南**：模型/数据/prompt 三个杠杆的定位、如何从 reward 组件判断当前所处的优化阶段，以及逐阶段路线图与退出/终止条件（英/中）。 |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | 数据集规模选择指南（噪声/SE 计算）、阶梯式扩容与 beam 超参调优手册（英/中）。 |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |
 | `doc/reward-comparison.md` / `doc/reward-comparison.zh.md` | v1 vs v2 实测对比记录：test split 上的 baseline 刻度校准、结果解读，以及 2×2 端到端对比操作手册（英/中）。 |

@@ -58,6 +58,12 @@ variables must be added to the `.env` (or exported):
 
 ## Workflow
 
+> **Start here:** before running anything, read
+> [doc/optimization-stages.md](doc/optimization-stages.md) to locate which
+> optimization stage you are in (measurement / model / prompt / data) and
+> which lever to pull — the commands below are the *mechanics*; that guide is
+> the *strategy*.
+
 ```bash
 # 1. Prepare the datasets (stratified sample; resolves frame blobs from Azure).
 #    Sampling and splitting stratify jointly by (family, is_courier_action),
@@ -363,6 +369,7 @@ Online (requires blob access + Azure OpenAI):
 | `prompts/apply_edit_video2frames.poml` | Shared reward-agnostic APO apply-edit meta-prompt (5-field JSON contract, frame-placeholder ban). The reward-specific text-gradient meta-prompt lives in each `reward/<version>/`. |
 | `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round), `tree.md` (compact version tree: derivation, scores, beam survival, winner), and — when the best prompt beats the seed — `diffs.md` (per-step derivation diffs plus overall seed → best) under `--output-dir`. |
 | `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json` (records the reward version; `--reward-version` selects it). |
+| `doc/optimization-stages.md` / `doc/optimization-stages.zh.md` | **Start-here strategy guide**: the model/data/prompt levers, how to locate your current optimization stage from reward components, and the stage-by-stage roadmap with exit/termination criteria (English/Chinese). |
 | `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
 | `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
 | `doc/reward-comparison.md` / `doc/reward-comparison.zh.md` | Measured v1-vs-v2 comparison log: baseline scale calibration on the test split, interpretation, and the 2×2 end-to-end comparison playbook (English/Chinese). |
