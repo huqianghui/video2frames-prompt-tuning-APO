@@ -21,11 +21,11 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, cast
+from typing import Any, Dict, List, Optional, cast
 
 from dotenv import load_dotenv
 
-from agentlightning.reward import find_final_reward
+from agentlightning.reward import find_final_reward, find_reward_spans, get_rewards_from_span
 from agentlightning.runner import LitAgentRunner
 from agentlightning.store import InMemoryLightningStore
 from agentlightning.tracer.agentops import AgentOpsTracer
@@ -37,6 +37,21 @@ from reward import REWARD_VERSION_ENV, resolve_version
 logger = logging.getLogger(__name__)
 
 RESULTS_DIR = PROJECT_ROOT / "results"
+
+
+def extract_components(spans: List[Any]) -> Optional[Dict[str, float]]:
+    """Recover per-component reward scores from the trace.
+
+    `frame_analyzer` emits one multi-dimensional reward span (components plus the
+    `total` primary dimension) before returning; the runner then auto-emits the
+    float return value as a single-dimension span. Scan backwards for the last
+    multi-dimensional span and drop the redundant `total` dimension.
+    """
+    for span in reversed(find_reward_spans(spans)):
+        dims = get_rewards_from_span(span)
+        if dims is not None and len(dims) > 1:
+            return {d.name: d.value for d in dims if d.name != "total" and d.value is not None}
+    return None
 
 
 async def evaluate_prompt(prompt_path: Path, split: str, limit: int, name: str, reward_version: str) -> Dict[str, Any]:
@@ -56,12 +71,22 @@ async def evaluate_prompt(prompt_path: Path, split: str, limit: int, name: str, 
                 rollout_obj = await runner.step(task, resources={"prompt_template": prompt_template})
                 spans = await store.query_spans(rollout_obj.rollout_id)
                 reward = find_final_reward(spans)
+                components = extract_components(cast(List[Any], spans))
             except Exception:
                 logger.exception("Task %s failed; recording reward 0.", task["id"])
                 reward = 0.0
-            details.append({"id": task["id"], "family": task["family"], "reward": reward})
+                components = None
+            details.append({"id": task["id"], "family": task["family"], "reward": reward, "components": components})
 
     rewards = [d["reward"] for d in details if d["reward"] is not None]
+    component_values: Dict[str, List[float]] = {}
+    for d in details:
+        for key, value in (d.get("components") or {}).items():
+            component_values.setdefault(key, []).append(value)
+    component_stats = {
+        key: {"mean": sum(values) / len(values), "n": len(values)}
+        for key, values in sorted(component_values.items())
+    }
     summary: Dict[str, Any] = {
         "name": name,
         "prompt_file": str(prompt_path),
@@ -69,6 +94,7 @@ async def evaluate_prompt(prompt_path: Path, split: str, limit: int, name: str, 
         "reward_version": reward_version,
         "num_tasks": len(details),
         "mean_reward": sum(rewards) / len(rewards) if rewards else 0.0,
+        "component_stats": component_stats,
         "details": details,
     }
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

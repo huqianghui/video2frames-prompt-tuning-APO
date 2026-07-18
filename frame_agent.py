@@ -34,6 +34,7 @@ from openai import AzureOpenAI, BadRequestError
 from openai.types.chat import ChatCompletionContentPartParam, ChatCompletionMessageParam
 
 from agentlightning.litagent import rollout
+from agentlightning.reward import emit_reward
 from agentlightning.types import Dataset, PromptTemplate
 from blob_utils import PROJECT_ROOT, BlobConfig, blob_config_from_env, blob_sas_url, load_env
 from reward import REWARD_VERSION_ENV, load_reward
@@ -141,6 +142,7 @@ def frame_analyzer(task: FrameTask, prompt_template: PromptTemplate) -> float:
         # content safety filter. This is a per-task data issue, identical for every
         # candidate prompt, so score it 0 instead of failing the rollout.
         logger.warning("Task %s: request rejected (%s), reward 0.", task["id"], e)
+        emit_reward({"total": 0.0, "content_filter_blocked": 1.0}, primary_key="total", propagate=False)
         return 0.0
     raw_output = response.choices[0].message.content or ""
     logger.debug("Task %s raw output: %s", task["id"], raw_output)
@@ -148,6 +150,14 @@ def frame_analyzer(task: FrameTask, prompt_template: PromptTemplate) -> float:
     result = reward_fn.score(raw_output, task["solution"], client)
     logger.info(
         "Task %s reward (%s): %.3f components=%s", task["id"], reward_fn.version, result.total, result.components
+    )
+    # Emit a multi-dimensional reward span so evaluate.py can recover per-component
+    # scores from the trace. The runner still auto-emits the float return value as
+    # the final reward span, so find_final_reward (the APO training path) is unchanged.
+    emit_reward(
+        {"total": result.total, **{k: float(v) for k, v in result.components.items()}},
+        primary_key="total",
+        propagate=False,
     )
     return result.total
 
