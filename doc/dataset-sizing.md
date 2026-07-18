@@ -60,6 +60,28 @@ property of the (model, reward, data) combination, not a constant.
 
 ## 3. Different splits need different sizes
 
+### Why not the 8:1:1 of weight training
+
+The traditional train:val:test ≈ 8:1:1 split assumes train is the *fuel* of
+gradient descent — the volume of data the model consumes directly determines
+how much it learns, so train dominates; val only picks hyperparameters / early
+stopping; test is a one-shot acceptance check. In APO the three splits are
+consumed in completely different ways:
+
+| Split | Weight training (where 8:1:1 comes from) | APO in this project |
+| --- | --- | --- |
+| train | Fuel for gradient descent, fully consumed every epoch; more = better learning | Only sampled in small failure batches (`--gradient-batch-size`, 4–8 tasks) for the critic to write text critiques; more rows add sampling diversity, not "learning volume" |
+| val | Picks hyperparameters / early stopping; lightly used | Scores **every candidate in full each round** (e.g. 9 candidates × 100 tasks); its SE directly sets the resolution of beam selection — the statistically heaviest split |
+| test | Final acceptance | Same — one-shot held-out acceptance, sized by the effect the final claim must resolve |
+
+In one line: 8:1:1 optimizes "how much the model learns"; APO must optimize
+"how accurately we measure". Train is a sampling pool, val is the measuring
+instrument, test is the final verdict. So APO's size ordering is typically
+**val ≥ train, with test sized independently by effect size** — unrelated to
+8:1:1 and often inverted (this project actually runs 80/100/30, val > train).
+The right approach is not a ratio but deriving each split's size from its
+statistical demand:
+
 The three splits play different roles, so they scale differently:
 
 - **`val` — scale this first.** It drives candidate selection inside APO; its
@@ -212,10 +234,52 @@ Which knob for which symptom:
 
 | Split | Pilot (smoke) | Working size | When to grow further |
 | --- | --- | --- | --- |
-| train | 4 | 40 (keep) | only if gradient batches look repetitive |
-| val | 2 | 64–100 (from σ) | ranking of top candidates unstable across runs |
-| test | 2 | ~100 | final paired gap has `p ≈ 0.05`, need tighter CI |
+| train | 4 | 80 | only if gradient batches look repetitive |
+| val | 2 | 100 (from measured σ, see section 8) | ranking of top candidates unstable across runs |
+| test | 2 | ~100 (to resolve 0.03–0.04 effects) | final paired gap has `p ≈ 0.05`, need tighter CI |
 
 Procedure in one line: estimate `σ` from `results/eval_*.json`, size val with
 `n ≈ 2(1.96σ/δ)²` for the gap `δ` you care about, keep train small but hard,
 screen with small val, confirm on a large held-out set.
+
+## 8. Measured calibration and per-stage sizes (updated 2026-07-18)
+
+The end-to-end runs of 2026-07-17/18 (see
+[reward-comparison.md](reward-comparison.md) sections 5–6) replace section 1's
+estimates with measured numbers:
+
+- **Per-task reward SD (σ)**: 0.113 (v1 reward) / 0.133 (v2 reward), from the
+  `val_rewards` of every candidate in `results/<run_id>/report.json` — a bit
+  below the 0.20 assumed in section 1.
+- **SE of a candidate mean at val=100**: 0.011–0.013. Across both runs the 9
+  candidate means span only ~0.05, i.e. the whole field covers ~4 SE and beam
+  selection among the mid-pack is noise-driven — val=100 is "sufficient but
+  not generous" for this task.
+- **Paired delta SD on test (σ_d)**: 0.193 (gpt-5.4 probe, 30 paired tasks).
+  At n=30 the paired SE is 0.035, while this project's real effects are all
+  in the 0.03–0.04 range (whole-APO +0.035, target-model swap +0.041) —
+  **a 30-task test cannot resolve them**, which is why "within noise / not
+  yet conclusive" recurs throughout reward-comparison. Getting a 0.04 effect
+  to 2 SE needs n ≈ (0.193 / 0.02)² ≈ 90–100 tasks.
+
+Per-stage recommended sizes:
+
+| Stage | train | val | test | Rationale |
+| --- | --- | --- | --- | --- |
+| Stage 0 smoke | 2 | 2 | 2 | verify the loop, ignore scores |
+| Stage 1 pilot | 40 | 24 | 30 | measure σ, not draw conclusions |
+| Stage 2 production runs (current) | 80 | 100 | 30 | val SE ≈ 0.012 supports beam selection |
+| Stage 3 final (next re-split) | 80 | 100 | **~100** | resolving 0.03–0.04 effects needs paired SE ≤ 0.02 |
+
+The final ratio is roughly **3:4:4** — even further from 8:1:1, but every
+number has a statistical justification. Two operational reminders:
+
+1. **Grow test once, then freeze.** Re-sampling re-deals the tasks, which
+   invalidates every recorded baseline anchor (0.5686, 0.6095 etc. in
+   reward-comparison sections 5/6) and forces re-measurement. Do not grow
+   test in small increments.
+2. **Repeat passes complement, not replace, a larger test.** Running the same
+   test split 2–3 times and averaging cuts generation/judge variance by
+   1/√k at far lower cost than adding tasks — but it cannot reduce the
+   task-sampling noise of having only 30 tasks. Key claims should rest on
+   both ~100 test tasks and 2–3 repeat passes.
