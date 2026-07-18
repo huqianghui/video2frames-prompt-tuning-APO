@@ -94,10 +94,44 @@ The three splits play different roles, so they scale differently:
   smaller than `σ`) in a one-sample version of the formula
   (`n ≈ (1.96 × σ_d / δ)²`). Around 100 tasks is usually enough for a credible
   final claim.
-- **`train` — usually fine as is.** Each APO round only samples
-  `--gradient-batch-size` (default 4) tasks to critique; a pool of 40 already
+- **`train` — usually fine as is.** Each critique only samples
+  `--gradient-batch-size` (default 4) tasks; a pool of 40 already
   provides variety. To improve the gradient signal, increase
   `--gradient-batch-size` or `--beam-rounds` before adding train data.
+
+### Terminology: what a "round" actually is (real train / val consumption)
+
+Phrases like "a few tasks per round" blur three levels — run, round, and
+branch. The precise hierarchy and where sampling happens:
+
+```
+1 run (one apo_train.py execution)
+└── beam_rounds rounds
+    └── each round: every surviving prompt in the beam (beam_width of them)
+        └── each spawns branch_factor children
+            └── each child = 1 critique step:
+                sample gradient_batch_size tasks from the train pool → rollout
+                → critic reads the failures and writes a critique → rewrite
+```
+
+- **Train is sampled per critique** (i.e. per child candidate generated), not
+  per round and not per run. Consumption per run:
+
+  ```
+  critique steps ≈ beam_rounds × beam_width × branch_factor
+  train rollouts = critique steps × gradient_batch_size   (with replacement)
+  ```
+
+- **Val is consumed per candidate**: every candidate (seed included) is scored
+  on the full val split, so `val rollouts = number of candidates × val_size`.
+
+Concretely, the 2026-07-17 v2 run (beam 2×2×2, gradient batch 8, val 100):
+round 1 spawned v1–v4 from the seed v0, round 2 spawned two children each
+from the survivors v1 and v3 (v5–v8) — 8 critique steps × 8 tasks =
+**64 train rollouts** (a pool of 80 is plenty), versus 9 candidates × 100
+tasks = **900 val rollouts**. That is the direct sense in which val is the
+statistically heaviest split, and why a train pool far smaller than val is
+still sufficient.
 
 ## 4. Staged scaling: coarse screening + large-set re-scoring
 
@@ -271,8 +305,12 @@ Per-stage recommended sizes:
 | Stage 2 production runs (current) | 80 | 100 | 30 | val SE ≈ 0.012 supports beam selection |
 | Stage 3 final (next re-split) | 80 | 100 | **~100** | resolving 0.03–0.04 effects needs paired SE ≤ 0.02 |
 
-The final ratio is roughly **3:4:4** — even further from 8:1:1, but every
-number has a statistical justification. Two operational reminders:
+The final sizes are 80:100:100; as a general rule of thumb remember
+**train : val : test ≈ 2 : 4 : 4** — roughly 8:1:1 inverted. Note this is a
+ratio of relative sizes, not a partition of a whole (the pool has 5850 tasks;
+only 280 are drawn on demand), and when the budget grows the increment should
+go to val/test first while train stays flat, so larger setups drift further
+from this starting point. Two operational reminders:
 
 1. **Grow test once, then freeze.** Re-sampling re-deals the tasks, which
    invalidates every recorded baseline anchor (0.5686, 0.6095 etc. in

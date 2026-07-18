@@ -80,9 +80,41 @@ train 是采样池、val 是测量仪器、test 是终审。因此 APO 的规模
   `evaluate.py` 用同一批任务跑两个 prompt，所以用单任务 reward *差值*的标准差
   （`σ_d`，通常远小于 `σ`）代入单样本版公式（`n ≈ (1.96 × σ_d / δ)²`）。
   100 条左右通常足以支撑可信的最终结论。
-- **`train` —— 一般不用动。** 每轮 APO 只采 `--gradient-batch-size`（默认 4）条
-  任务做批评；40 条的池子已有足够多样性。想改善梯度信号，先加
+- **`train` —— 一般不用动。** 每次批评只采 `--gradient-batch-size`（默认 4）条
+  任务；40 条的池子已有足够多样性。想改善梯度信号，先加
   `--gradient-batch-size` 或 `--beam-rounds`，再考虑加 train 数据。
+
+### 术语："轮"具体指什么（train / val 的实际消耗量）
+
+"每轮抽几条"这类说法容易混淆 run / round / branch 三个层级。精确的层级
+关系与抽样时机如下：
+
+```
+1 次 run（一次 apo_train.py 执行）
+└── beam_rounds 轮
+    └── 每轮：beam 中每个存活 prompt（beam_width 个）
+        └── 各生成 branch_factor 个子候选
+            └── 每个子候选的生成 = 1 次 critique：
+                从 train 池抽 gradient_batch_size 条 → rollout
+                → critic 看失败样例写批评 → 改写出新 prompt
+```
+
+- **train 的抽样发生在"每次 critique"**（即每生成一个子候选），不是每轮
+  也不是每次 run。单次 run 的消耗量：
+
+  ```
+  critique 次数 ≈ beam_rounds × beam_width × branch_factor
+  train rollout 数 = critique 次数 × gradient_batch_size   （可重复抽）
+  ```
+
+- **val 的消耗发生在"每个候选"**：每个候选（含种子）都在全量 val 上打分，
+  `val rollout 数 = 候选总数 × val_size`。
+
+以 2026-07-17 的 v2 run（beam 2×2×2、gradient batch 8、val 100）为例：
+round 1 从种子 v0 生成 v1–v4，round 2 从存活的 v1、v3 各生成 2 个
+（v5–v8），共 8 次 critique × 8 条 = **64 条 train rollout**（80 条池子
+足够）；而 9 个候选 × 100 条 = **900 条 val rollout**——这就是"val 是
+统计上最重的 split"的直接体现，也是 train 池远小于 val 仍然够用的原因。
 
 ## 4. 阶梯式扩容：粗筛 + 大集复评
 
@@ -237,8 +269,10 @@ rollouts ≈ val_size                                   （种子 prompt baselin
 | Stage 2 正式训练（当前） | 80 | 100 | 30 | val SE ≈ 0.012 支撑 beam 选择 |
 | Stage 3 终态（下次重采样） | 80 | 100 | **~100** | 分辨 0.03–0.04 效应需配对 SE ≤ 0.02 |
 
-终态比例约 **3:4:4**——离 8:1:1 更远了，但每个数字都有统计依据。两点操作
-提醒：
+终态 80:100:100，作为一般性经验比例可记成 **train : val : test ≈ 2 : 4 : 4**
+——与 8:1:1 接近倒挂。注意这只是相对大小的比，不是对总量的划分（候选池
+5850 条，只按需抽 280 条）；且预算增加时增量应先给 val/test、train 基本
+不动，所以规模越大比例越偏离这个起点。两点操作提醒：
 
 1. **test 扩容要一次到位、之后冻结。** 重新采样会重新发牌，所有已记录的
    baseline 锚点（reward-comparison 第 5/6 节的 0.5686、0.6095 等）随之
