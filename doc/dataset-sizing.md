@@ -1,323 +1,282 @@
-# Choosing Dataset Sizes for APO
+# APO 数据集规模选择指南
 
-**English** | [中文](dataset-sizing.zh.md)
+[English](en-us/dataset-sizing.md) | **中文**
 
-How large do the `train` / `val` / `test` splits need to be? Large enough that the
-score differences you care about are visible above the evaluation noise — and no
-larger. This document gives a concrete procedure for this project: estimate the
-noise from runs you already have, derive the required sample sizes, and scale up
-in stages instead of guessing.
+`train` / `val` / `test` 三个 split 需要多大？答案是：大到你关心的分数差异能从
+评估噪声中显现出来——再大就是浪费。本文给出针对本项目的具体流程：用已有运行
+结果估计噪声、推导所需样本量，并按阶段扩容而不是拍脑袋。
 
-## 1. Why size matters: selection noise
+## 1. 为什么大小重要：选择噪声
 
-APO selects prompts by their **average reward on the val split**. Every average
-over `n` tasks carries a standard error
+APO 依据候选 prompt 在 **val split 上的平均 reward** 来选优。任何 `n` 条任务上的
+平均值都带有标准误
 
 ```
 SE = σ / √n
 ```
 
-where `σ` is the per-task reward standard deviation. When two candidate prompts
-are compared, the difference of two such averages is only trustworthy when it
-exceeds roughly `2.8 × SE` (a two-sample z-test at 95% confidence,
-`√2 × 1.96 ≈ 2.8`). Anything smaller is coin-flipping — APO will "select" prompts
-based on noise, and the reported best score will not reproduce.
+其中 `σ` 是单任务 reward 的标准差。比较两个候选 prompt 时，两个平均值之差只有
+超过约 `2.8 × SE`（95% 置信度的双样本 z 检验，`√2 × 1.96 ≈ 2.8`）才可信。低于
+这个幅度就是掷硬币——APO 会基于噪声"选出"prompt，报告的最佳分数也无法复现。
 
-To detect a true difference of size `δ` between two prompts, you need
+要检测两个 prompt 之间大小为 `δ` 的真实差异，需要
 
 ```
-n ≈ 2 × (1.96 × σ / δ)²    per prompt, on the val split
+n ≈ 2 × (1.96 × σ / δ)²    （每个 prompt，在 val split 上）
 ```
 
-With a typical `σ ≈ 0.20` for this project's hybrid reward:
+以本项目混合 reward 典型的 `σ ≈ 0.20` 计算：
 
-| val size `n` | SE | smallest reliably detectable gap (≈2.8×SE) |
+| val 大小 `n` | SE | 能可靠检测的最小差距（≈2.8×SE） |
 | --- | --- | --- |
-| 24 (default) | ~0.041 | > 0.11 |
+| 24（默认） | ~0.041 | > 0.11 |
 | 50 | ~0.028 | > 0.08 |
 | 100 | ~0.020 | > 0.055 |
 | 200 | ~0.014 | > 0.04 |
 
-Interpretation for this project: with the default `val` of 24, a prompt edit that
-improves the true reward by 0.05 is **invisible** — which is consistent with
-smoke runs reporting "seed prompt was never beaten" at 0.37 vs 0.37. Expect
-useful prompt-tuning gains in the 0.03–0.10 range, so a val split of **64–100**
-is a realistic working size.
+对本项目的含义：默认 val=24 时，一个把真实 reward 提升 0.05 的 prompt 修改是
+**看不见的**——这与冒烟运行报告的 "seed prompt was never beaten"（0.37 vs 0.37）
+一致。prompt 调优的有效收益通常在 0.03–0.10 区间，所以 **64–100** 是现实可用的
+val 大小。
 
-## 2. Estimate σ from runs you already have (free)
+## 2. 用已有运行结果估计 σ（零成本）
 
-Do not guess `σ` — the per-task rewards are already on disk:
+不要猜 `σ`——单任务 reward 已经在磁盘上：
 
-- `results/eval_<name>.json` (written by `evaluate.py`) contains one reward per
-  task.
-- `results/report.json` (written by `generate_report.py` after each APO run)
-  contains `val_rewards` per candidate.
+- `results/eval_<name>.json`（`evaluate.py` 输出）包含每条任务的 reward。
+- `results/report.json`（每次 APO 运行后 `generate_report.py` 输出）包含每个
+  候选的 `val_rewards`。
 
-Compute the standard deviation of those rewards; that is your `σ`. Plug it into
-the formula above with the `δ` you want to detect, and you have your val size.
-Re-estimate after any change to the reward function or the task model — `σ` is a
-property of the (model, reward, data) combination, not a constant.
+对这些 reward 求标准差，就是你的 `σ`。代入上面的公式和你想检测的 `δ`，即得
+val 大小。reward 函数或任务模型有任何变更后要重新估计——`σ` 是（模型、reward、
+数据）组合的属性，不是常数。
 
-## 3. Different splits need different sizes
+## 3. 不同 split 需要不同的大小
 
-### Why not the 8:1:1 of weight training
+### 为什么不是权重训练的 8:1:1
 
-The traditional train:val:test ≈ 8:1:1 split assumes train is the *fuel* of
-gradient descent — the volume of data the model consumes directly determines
-how much it learns, so train dominates; val only picks hyperparameters / early
-stopping; test is a one-shot acceptance check. In APO the three splits are
-consumed in completely different ways:
+传统模型训练 train:val:test ≈ 8:1:1 的前提是：train 是梯度下降的"燃料"，
+模型消耗的数据量直接决定学习效果，所以 train 占绝对大头；val 只用来挑超参
+/早停；test 做一次验收。APO 中三个 split 的消耗方式完全不同：
 
-| Split | Weight training (where 8:1:1 comes from) | APO in this project |
+| Split | 权重训练（8:1:1 的由来） | 本项目 APO |
 | --- | --- | --- |
-| train | Fuel for gradient descent, fully consumed every epoch; more = better learning | Only sampled in small failure batches (`--gradient-batch-size`, 4–8 tasks) for the critic to write text critiques; more rows add sampling diversity, not "learning volume" |
-| val | Picks hyperparameters / early stopping; lightly used | Scores **every candidate in full each round** (e.g. 9 candidates × 100 tasks); its SE directly sets the resolution of beam selection — the statistically heaviest split |
-| test | Final acceptance | Same — one-shot held-out acceptance, sized by the effect the final claim must resolve |
+| train | 梯度下降的燃料，每个 epoch 全量消耗，越多学得越好 | 只按 `--gradient-batch-size`（4–8 条）抽小批失败样例给 critic 写文字批评；加量只增加抽样多样性，不增加"学习量" |
+| val | 挑超参/早停，用量小 | 每轮为**每个候选**全量打分（如 9 候选 × 100 条）；它的 SE 直接决定 beam 选择的分辨率，是统计上最重的 split |
+| test | 最终验收 | 相同——一次性 held-out 验收，规模由最终结论要分辨的效应量决定 |
 
-In one line: 8:1:1 optimizes "how much the model learns"; APO must optimize
-"how accurately we measure". Train is a sampling pool, val is the measuring
-instrument, test is the final verdict. So APO's size ordering is typically
-**val ≥ train, with test sized independently by effect size** — unrelated to
-8:1:1 and often inverted (this project actually runs 80/100/30, val > train).
-The right approach is not a ratio but deriving each split's size from its
-statistical demand:
+一句话：8:1:1 优化的是"模型学到多少"，APO 要优化的是"测量有多准"。
+train 是采样池、val 是测量仪器、test 是终审。因此 APO 的规模排序通常是
+**val ≥ train，test 由效应量单独定**，与 8:1:1 无关、甚至倒挂（本项目实际
+使用 80/100/30，val > train）。正确做法不是按比例分，而是按每个 split 的
+统计需求逆推：
 
-The three splits play different roles, so they scale differently:
+三个 split 角色不同，扩容方式也不同：
 
-- **`val` — scale this first.** It drives candidate selection inside APO; its
-  noise directly causes wrong selections. Target the `n` from the formula
-  (typically 64–100 here). Keep `--val-batch-size` equal to the full val size so
-  every candidate is scored on the same tasks.
-- **`test` — second priority.** The final baseline-vs-tuned comparison is
-  **paired**: `evaluate.py` runs both prompts on the same tasks, so use the
-  standard deviation of the per-task reward *differences* (`σ_d`, usually much
-  smaller than `σ`) in a one-sample version of the formula
-  (`n ≈ (1.96 × σ_d / δ)²`). Around 100 tasks is usually enough for a credible
-  final claim.
-- **`train` — usually fine as is.** Each critique only samples
-  `--gradient-batch-size` (default 4) tasks; a pool of 40 already
-  provides variety. To improve the gradient signal, increase
-  `--gradient-batch-size` or `--beam-rounds` before adding train data.
+- **`val` —— 最先扩。** 它驱动 APO 内部的候选选择；它的噪声直接导致选错。
+  目标是公式算出的 `n`（本项目通常 64–100）。让 `--val-batch-size` 等于 val
+  的全量大小，保证每个候选都在同一批任务上打分。
+- **`test` —— 第二优先。** 最终的 baseline-vs-tuned 对比是**配对的**：
+  `evaluate.py` 用同一批任务跑两个 prompt，所以用单任务 reward *差值*的标准差
+  （`σ_d`，通常远小于 `σ`）代入单样本版公式（`n ≈ (1.96 × σ_d / δ)²`）。
+  100 条左右通常足以支撑可信的最终结论。
+- **`train` —— 一般不用动。** 每次批评只采 `--gradient-batch-size`（默认 4）条
+  任务；40 条的池子已有足够多样性。想改善梯度信号，先加
+  `--gradient-batch-size` 或 `--beam-rounds`，再考虑加 train 数据。
 
-### Terminology: what a "round" actually is (real train / val consumption)
+### 术语："轮"具体指什么（train / val 的实际消耗量）
 
-Phrases like "a few tasks per round" blur three levels — run, round, and
-branch. The precise hierarchy and where sampling happens:
+"每轮抽几条"这类说法容易混淆 run / round / branch 三个层级。精确的层级
+关系与抽样时机如下：
 
 ```
-1 run (one apo_train.py execution)
-└── beam_rounds rounds
-    └── each round: every surviving prompt in the beam (beam_width of them)
-        └── each spawns branch_factor children
-            └── each child = 1 critique step:
-                sample gradient_batch_size tasks from the train pool → rollout
-                → critic reads the failures and writes a critique → rewrite
+1 次 run（一次 apo_train.py 执行）
+└── beam_rounds 轮
+    └── 每轮：beam 中每个存活 prompt（beam_width 个）
+        └── 各生成 branch_factor 个子候选
+            └── 每个子候选的生成 = 1 次 critique：
+                从 train 池抽 gradient_batch_size 条 → rollout
+                → critic 看失败样例写批评 → 改写出新 prompt
 ```
 
-- **Train is sampled per critique** (i.e. per child candidate generated), not
-  per round and not per run. Consumption per run:
+- **train 的抽样发生在"每次 critique"**（即每生成一个子候选），不是每轮
+  也不是每次 run。单次 run 的消耗量：
 
   ```
-  critique steps ≈ beam_rounds × beam_width × branch_factor
-  train rollouts = critique steps × gradient_batch_size   (with replacement)
+  critique 次数 ≈ beam_rounds × beam_width × branch_factor
+  train rollout 数 = critique 次数 × gradient_batch_size   （可重复抽）
   ```
 
-- **Val is consumed per candidate**: every candidate (seed included) is scored
-  on the full val split, so `val rollouts = number of candidates × val_size`.
+- **val 的消耗发生在"每个候选"**：每个候选（含种子）都在全量 val 上打分，
+  `val rollout 数 = 候选总数 × val_size`。
 
-Concretely, the 2026-07-17 v2 run (beam 2×2×2, gradient batch 8, val 100):
-round 1 spawned v1–v4 from the seed v0, round 2 spawned two children each
-from the survivors v1 and v3 (v5–v8) — 8 critique steps × 8 tasks =
-**64 train rollouts** (a pool of 80 is plenty), versus 9 candidates × 100
-tasks = **900 val rollouts**. That is the direct sense in which val is the
-statistically heaviest split, and why a train pool far smaller than val is
-still sufficient.
+以 2026-07-17 的 v2 run（beam 2×2×2、gradient batch 8、val 100）为例：
+round 1 从种子 v0 生成 v1–v4，round 2 从存活的 v1、v3 各生成 2 个
+（v5–v8），共 8 次 critique × 8 条 = **64 条 train rollout**（80 条池子
+足够）；而 9 个候选 × 100 条 = **900 条 val rollout**——这就是"val 是
+统计上最重的 split"的直接体现，也是 train 池远小于 val 仍然够用的原因。
 
-## 4. Staged scaling: coarse screening + large-set re-scoring
+## 4. 阶梯式扩容：粗筛 + 大集复评
 
-Evaluating every candidate on a large val split is the expensive part
-(`cost ≈ beam_rounds × beam_width × branch_factor × (gradient_batch + val_batch)`
-rollouts, each one multimodal call + one judge call). The standard remedy is a
-racing / successive-halving ladder — cheap screening for the many, expensive
-scoring for the few:
+在大 val 上评估每个候选是最贵的环节
+（`成本 ≈ beam_rounds × beam_width × branch_factor × (gradient_batch + val_batch)`
+条 rollout，每条一次多模态调用 + 一次 judge 调用）。标准解法是
+racing / successive-halving 阶梯——多数候选便宜筛，少数候选贵重评：
 
-1. **Screen** — run APO with a small-to-medium val (e.g. 24–64). Small samples
-   are enough to discard clearly bad candidates; only near-ties are decided by
-   noise.
-2. **Re-score** — after training, take the top 2–3 candidate prompts from
-   `results/report.md` plus the baseline, and re-evaluate each on a larger
-   held-out re-scoring split (100–200 tasks, sampled from the full 5850 pool,
-   disjoint from train/val/test):
+1. **粗筛** —— 用中小规模的 val（如 24–64）跑 APO。小样本足以淘汰明显差的
+   候选；只有接近平手的才会被噪声左右。
+2. **复评** —— 训练结束后，从 `results/report.md` 取 top 2–3 个候选 prompt 加上
+   baseline，各自在一个更大的 held-out 复评集（100–200 条，从全量 5850 池中
+   采样，与 train/val/test 不重叠）上重新评估：
 
    ```bash
    .venv/bin/python evaluate.py --name baseline
    .venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned
-   # plus any runner-up prompt saved from report.md
+   # 以及从 report.md 保存下来的候补 prompt
    ```
 
-   Pick the final winner by these scores, not the small-val scores.
-3. **Escalate only on evidence** — if the re-scored best-vs-baseline gap is
-   smaller than `2 × SE` of the re-scoring set, the effect is not established.
-   First search harder (more beam rounds / width, better gradient batches);
-   only grow the datasets when a promising-but-unconfirmed gap needs a tighter
-   confidence interval.
+   最终赢家以这些分数为准，而不是小 val 的分数。
+3. **有证据才升级** —— 如果复评的 best-vs-baseline 差距小于复评集的 `2 × SE`，
+   说明效果尚未确立。先加大搜索（更多 beam 轮数/宽度、更好的 gradient batch）；
+   只有当一个"有希望但未确认"的差距需要更窄的置信区间时才扩数据集。
 
-This ladder needs no changes to APO itself — `prepare_data.py` sizes are CLI
-flags and `evaluate.py` accepts any prompt file and split.
+这套阶梯不需要改 APO 内部逻辑——`prepare_data.py` 的大小都是 CLI 参数，
+`evaluate.py` 接受任意 prompt 文件和 split。
 
-## 5. Sampling techniques
+## 5. 采样技术
 
-- **Keep `val`/`test` stratified-random** (already the default:
-  `prepare_data.py` stratifies by dataset family with a fixed seed). These
-  splits must represent the deployment distribution; never bias them.
-- **Bias `train` toward hard examples if anything.** The gradient step learns
-  from failures, so low-reward tasks carry the most information. Score a
-  candidate pool with the baseline prompt first, then over-sample the low-reward
-  tasks into `train`. This usually beats simply adding more (mostly easy) train
-  data.
-- **Always sample with `--probe-content-filter`** so content-filter-blocked
-  videos (uniform reward 0, pure noise) never enter any split; probe results are
-  cached per video in `data/content_filter_cache.json`, so growing the splits
-  later re-probes only the new videos.
+- **`val`/`test` 保持分层随机**（已是默认行为：`prepare_data.py` 按数据集家族
+  分层、固定 seed）。这两个 split 必须代表部署时的分布，绝不能人为加偏。
+- **`train` 反而可以偏向难例。** 梯度步从失败中学习，低分任务信息量最大。
+  先用 baseline prompt 给候选池打分，再把低分任务多采进 `train`。这通常比
+  单纯加（大多简单的）train 数据更有效。
+- **采样始终带 `--probe-content-filter`**，让被内容过滤器 block 的视频
+  （reward 恒为 0，纯噪声）不进入任何 split；探测结果按视频缓存在
+  `data/content_filter_cache.json`，之后扩容只探测新增视频。
 
-## 6. Step-by-step playbook: growing data and beam size together
+## 6. 操作手册：数据与 beam 同步逐级扩容
 
-The dataset sizes and the beam hyperparameters are one budget — grow them in
-lockstep, one stage at a time, and let each stage's numbers decide the next
-move. Total rollout cost per run is roughly:
+数据集大小和 beam 超参数是同一份预算——按阶段同步扩，一次动一个轴，用每个
+阶段的数字决定下一步。每次运行的 rollout 总成本约为：
 
 ```
-rollouts ≈ val_size                                   (seed-prompt baseline)
+rollouts ≈ val_size                                   （种子 prompt baseline）
          + beam_rounds × beam_width × branch_factor
            × (gradient_batch_size + val_batch_size)
 ```
 
-**Stage 0 — smoke (once per environment).** Verify the loop, not the science.
+**Stage 0 —— 冒烟（每个环境跑一次）。** 验证的是闭环，不是科学结论。
 
 ```bash
 .venv/bin/python prepare_data.py --train-size 2 --val-size 2 --test-size 2 --probe-content-filter
 .venv/bin/python apo_train.py --smoke
 ```
 
-Move on when: run completes, `results/report.md` is generated.
+进入下一阶段的条件：运行完成、`results/report.md` 正常生成。
 
-**Stage 1 — pilot: measure the noise.** Default sizes, default beam.
+**Stage 1 —— 试点：测量噪声。** 默认大小、默认 beam。
 
 ```bash
 .venv/bin/python prepare_data.py --train-size 40 --val-size 24 --test-size 30 --seed 42 --probe-content-filter
-.venv/bin/python apo_train.py                     # beam 2x2x2, gradient batch 4, val batch 24
-.venv/bin/python evaluate.py --name baseline      # per-task rewards -> sigma
+.venv/bin/python apo_train.py                     # beam 2x2x2，gradient batch 4，val batch 24
+.venv/bin/python evaluate.py --name baseline      # 单任务 reward -> σ
 ```
 
-Read out of this stage: `σ` from `results/eval_baseline.json`, and the spread of
-candidate val scores in `results/report.md`. Decision rule:
+本阶段的产出：从 `results/eval_baseline.json` 得到 `σ`，从 `results/report.md`
+看候选 val 分数的分布。决策规则：
 
-- Candidate scores all within `2.8 × σ/√24` of each other → val is too small to
-  select; go to Stage 2.
-- One candidate clearly wins → you may already confirm it on test and stop.
+- 所有候选分数彼此都在 `2.8 × σ/√24` 之内 → val 太小无法选优；进入 Stage 2。
+- 有候选明显胜出 → 可直接在 test 上确认并结束。
 
-**Stage 2 — widen the search, then sharpen the ruler.** Change one axis at a
-time so you can attribute the improvement:
+**Stage 2 —— 先拓宽搜索，再磨利尺子。** 一次只动一个轴，才能归因收益：
 
-1. *More exploration, same data* — raise `--beam-rounds 3` (depth: more rounds
-   of critique-and-rewrite) or `--beam-width 3` / `--branch-factor 3` (breadth:
-   more parallel candidates). Prefer depth first: rounds compound, width
-   multiplies cost linearly for one-shot diversity.
-2. *Better critiques* — raise `--gradient-batch-size 8` so each text-gradient
-   sees more failure examples (cheap: train rollouts only).
-3. *Sharper selection* — regrow val to the size Section 1 prescribes and match
-   the flag:
+1. *同样数据、更多探索* —— 提高 `--beam-rounds 3`（深度：更多轮批评-改写）或
+   `--beam-width 3` / `--branch-factor 3`（广度：更多并行候选）。优先加深度：
+   轮数是复利，宽度只是一次性多样性的线性花费。
+2. *更好的批评* —— 提高 `--gradient-batch-size 8`，让每次文本梯度看到更多失败
+   样例（便宜：只涉及 train rollout）。
+3. *更锐利的选择* —— 把 val 扩到第 1 节算出的大小，并同步 flag：
 
    ```bash
    .venv/bin/python prepare_data.py --train-size 40 --val-size 64 --test-size 100 --seed 42 --probe-content-filter
    .venv/bin/python apo_train.py --beam-rounds 3 --val-batch-size 64
    ```
 
-   The probe cache makes regrowing cheap: only the newly added videos are
-   probed. Note that regrowing with a different size re-deals all splits —
-   train/val/test stay disjoint, but individual tasks may move between splits,
-   so re-run the baseline eval afterwards.
+   探针缓存让扩容很便宜：只有新增的视频会被探测。注意换了大小重新采样会
+   重新发牌——train/val/test 仍互不重叠，但单条任务可能换 split，之后要重跑
+   baseline 评估。
 
-Decision rule: keep escalating exploration while each round still produces a new
-best (`report.md` shows `Best prompt updated` in late rounds). If the last round
-never improves, more rounds are wasted money — stop growing the beam.
+决策规则：只要 `report.md` 显示后期轮次仍出现 `Best prompt updated`，就继续加大
+探索。如果最后一轮从未改进，再加轮数就是浪费钱——停止扩 beam。
 
-**Stage 3 — confirm on held-out data.** Re-score the finalists (Section 4,
-step 2) on test / a large re-scoring split:
+**Stage 3 —— 在 held-out 数据上确认。** 用 test / 大复评集给决赛选手复评
+（第 4 节第 2 步）：
 
 ```bash
 .venv/bin/python evaluate.py --name baseline
 .venv/bin/python evaluate.py --prompt results/best_prompt.txt --name tuned
 ```
 
-Ship the tuned prompt only if the paired gap exceeds `2 × SE` of the test set.
-Otherwise return to Stage 2 with the cheapest untried lever.
+只有配对差距超过 test 集的 `2 × SE` 才发布调优后的 prompt；否则带着最便宜的
+未尝试手段回到 Stage 2。
 
-Which knob for which symptom:
+症状与旋钮对照表：
 
-| Symptom (from report.md / eval) | Knob | Direction |
+| 症状（来自 report.md / eval） | 旋钮 | 方向 |
 | --- | --- | --- |
-| candidates tie within noise | `--val-batch-size` + val split size | grow val |
-| candidates all similar to seed | `--branch-factor`, gradient model | more/stronger edits |
-| best improves every round | `--beam-rounds` | add rounds |
-| last rounds never improve | `--beam-rounds` | stop growing |
-| critiques repeat the same complaint | `--gradient-batch-size`, harder train tasks | richer failures |
-| final gap plausible but unconfirmed | test split size | grow test |
+| 候选分数在噪声内打平 | `--val-batch-size` + val split 大小 | 扩 val |
+| 候选都和种子差不多 | `--branch-factor`、gradient 模型 | 更多/更强的修改 |
+| 每轮都刷新 best | `--beam-rounds` | 加轮数 |
+| 后期轮次从不改进 | `--beam-rounds` | 停止加 |
+| 批评反复说同一个问题 | `--gradient-batch-size`、更难的 train 任务 | 更丰富的失败样例 |
+| 最终差距貌似存在但未确认 | test split 大小 | 扩 test |
 
-## 7. Recommended defaults for this project
+## 7. 本项目推荐默认值
 
-| Split | Pilot (smoke) | Working size | When to grow further |
+| Split | 试点（冒烟） | 工作大小 | 何时继续扩 |
 | --- | --- | --- | --- |
-| train | 4 | 80 | only if gradient batches look repetitive |
-| val | 2 | 100 (from measured σ, see section 8) | ranking of top candidates unstable across runs |
-| test | 2 | ~100 (to resolve 0.03–0.04 effects) | final paired gap has `p ≈ 0.05`, need tighter CI |
+| train | 4 | 80 | 仅当 gradient batch 看起来重复单调 |
+| val | 2 | 100（由实测 σ 定，见第 8 节） | top 候选排名跨运行不稳定 |
+| test | 2 | ~100（分辨 0.03–0.04 效应） | 最终配对差距 `p ≈ 0.05`，需要更窄置信区间 |
 
-Procedure in one line: estimate `σ` from `results/eval_*.json`, size val with
-`n ≈ 2(1.96σ/δ)²` for the gap `δ` you care about, keep train small but hard,
-screen with small val, confirm on a large held-out set.
+一句话流程：从 `results/eval_*.json` 估 `σ`，按你关心的差距 `δ` 用
+`n ≈ 2(1.96σ/δ)²` 定 val 大小，train 保持小而难，小 val 粗筛，大 held-out 集确认。
 
-## 8. Measured calibration and per-stage sizes (updated 2026-07-18)
+## 8. 实测校准与各阶段条数（2026-07-18 更新）
 
-The end-to-end runs of 2026-07-17/18 (see
-[reward-comparison.md](reward-comparison.md) sections 5–6) replace section 1's
-estimates with measured numbers:
+2026-07-17/18 的端到端运行（见
+[reward-comparison.md](reward-comparison.md) 第 5–6 节）把第 1 节的
+估算换成了实测数字：
 
-- **Per-task reward SD (σ)**: 0.113 (v1 reward) / 0.133 (v2 reward), from the
-  `val_rewards` of every candidate in `results/<run_id>/report.json` — a bit
-  below the 0.20 assumed in section 1.
-- **SE of a candidate mean at val=100**: 0.011–0.013. Across both runs the 9
-  candidate means span only ~0.05, i.e. the whole field covers ~4 SE and beam
-  selection among the mid-pack is noise-driven — val=100 is "sufficient but
-  not generous" for this task.
-- **Paired delta SD on test (σ_d)**: 0.193 (gpt-5.4 probe, 30 paired tasks).
-  At n=30 the paired SE is 0.035, while this project's real effects are all
-  in the 0.03–0.04 range (whole-APO +0.035, target-model swap +0.041) —
-  **a 30-task test cannot resolve them**, which is why "within noise / not
-  yet conclusive" recurs throughout reward-comparison. Getting a 0.04 effect
-  to 2 SE needs n ≈ (0.193 / 0.02)² ≈ 90–100 tasks.
+- **单任务 reward SD（σ）**：0.113（v1 reward）/ 0.133（v2 reward），来自
+  `results/<run_id>/report.json` 各候选的 `val_rewards`——比第 1 节假设的
+  0.20 略小。
+- **val=100 时候选均值的 SE**：0.011–0.013。两次运行中 9 个候选的均值跨度
+  只有 ~0.05，即整个候选群横跨约 4 个 SE，中游候选之间的 beam 选择由噪声
+  主导——val=100 在这个任务上是"够用但不富余"的大小。
+- **test 配对差值 SD（σ_d）**：0.193（gpt-5.4 探测，30 条配对比较）。n=30
+  时配对 SE = 0.035，而本项目的真实效应量都在 0.03–0.04 量级（APO 全程
+  +0.035、换 target 模型 +0.041）——**30 条 test 分辨不了它们**，这就是
+  reward-comparison 里反复出现"在噪声内 / 尚不足以下结论"的原因。要让
+  0.04 的效应达到 2 个 SE，需要 n ≈ (0.193 / 0.02)² ≈ 90–100 条。
 
-Per-stage recommended sizes:
+据此，各阶段的推荐条数：
 
-| Stage | train | val | test | Rationale |
+| 阶段 | train | val | test | 依据 |
 | --- | --- | --- | --- | --- |
-| Stage 0 smoke | 2 | 2 | 2 | verify the loop, ignore scores |
-| Stage 1 pilot | 40 | 24 | 30 | measure σ, not draw conclusions |
-| Stage 2 production runs (current) | 80 | 100 | 30 | val SE ≈ 0.012 supports beam selection |
-| Stage 3 final (next re-split) | 80 | 100 | **~100** | resolving 0.03–0.04 effects needs paired SE ≤ 0.02 |
+| Stage 0 冒烟 | 2 | 2 | 2 | 只验流程，不看分数 |
+| Stage 1 试点 | 40 | 24 | 30 | 目的是测 σ，不是出结论 |
+| Stage 2 正式训练（当前） | 80 | 100 | 30 | val SE ≈ 0.012 支撑 beam 选择 |
+| Stage 3 终态（下次重采样） | 80 | 100 | **~100** | 分辨 0.03–0.04 效应需配对 SE ≤ 0.02 |
 
-The final sizes are 80:100:100; as a general rule of thumb remember
-**train : val : test ≈ 2 : 4 : 4** — roughly 8:1:1 inverted. Note this is a
-ratio of relative sizes, not a partition of a whole (the pool has 5850 tasks;
-only 280 are drawn on demand), and when the budget grows the increment should
-go to val/test first while train stays flat, so larger setups drift further
-from this starting point. Two operational reminders:
+终态 80:100:100，作为一般性经验比例可记成 **train : val : test ≈ 2 : 4 : 4**
+——与 8:1:1 接近倒挂。注意这只是相对大小的比，不是对总量的划分（候选池
+5850 条，只按需抽 280 条）；且预算增加时增量应先给 val/test、train 基本
+不动，所以规模越大比例越偏离这个起点。两点操作提醒：
 
-1. **Grow test once, then freeze.** Re-sampling re-deals the tasks, which
-   invalidates every recorded baseline anchor (0.5686, 0.6095 etc. in
-   reward-comparison sections 5/6) and forces re-measurement. Do not grow
-   test in small increments.
-2. **Repeat passes complement, not replace, a larger test.** Running the same
-   test split 2–3 times and averaging cuts generation/judge variance by
-   1/√k at far lower cost than adding tasks — but it cannot reduce the
-   task-sampling noise of having only 30 tasks. Key claims should rest on
-   both ~100 test tasks and 2–3 repeat passes.
+1. **test 扩容要一次到位、之后冻结。** 重新采样会重新发牌，所有已记录的
+   baseline 锚点（reward-comparison 第 5/6 节的 0.5686、0.6095 等）随之
+   作废、需要重测。不要分多次小步扩 test。
+2. **重复评估与扩 test 互补而不互替。** 同一 test split 跑 2–3 遍取平均，
+   可把生成/judge 方差砍到 1/√k，成本远低于扩任务数；但它压不住"任务只有
+   30 条"的采样噪声。关键结论应同时依赖 ~100 条 test 和 2–3 遍重复评估。

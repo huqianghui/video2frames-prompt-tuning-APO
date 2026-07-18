@@ -1,98 +1,86 @@
-# APO Meta-Prompt Customization (POML)
+# APO 元 Prompt 定制（POML）
 
-**English** | [中文](apo-poml-customization.zh.md)
+[English](en-us/apo-poml-customization.md) | **中文**
 
-APO itself is driven by two prompts — *meta-prompts* that operate on the prompt
-being tuned. This document explains what they do, why the framework defaults
-are not enough for this project, and exactly what the project-specific versions
-change. The two files live in different places by reward coupling: the
-text-gradient template states the optimization objective and is owned by each
-reward version (`reward/<version>/text_gradient_video2frames.poml`, declared in
-the version's `apo_meta_prompts` config), while the reward-agnostic apply-edit
-template is shared in [`prompts/`](../prompts).
+APO 本身也由两个 prompt 驱动——作用于"被调优 prompt"之上的*元 prompt*。本文
+说明它们各自的作用、为什么框架默认版对本项目不够用，以及项目定制版到底改了
+什么。两个文件按与 reward 的耦合程度放在不同位置：text-gradient 模板描述
+优化目标，归各 reward 版本所有（`reward/<version>/text_gradient_video2frames.poml`，
+在版本 `config.yaml` 的 `apo_meta_prompts` 段声明）；与 reward 无关的
+apply-edit 模板共享放在 [`prompts/`](../prompts)。
 
-## 1. What the two files do
+## 1. 这两个文件的作用
 
-Each APO beam-search round expands a candidate prompt in two LLM steps
-(`textual_gradient_and_apply_edit` in `agentlightning/algorithm/apo/apo.py`):
+APO beam search 的每一轮扩展都分两步 LLM 调用完成
+（`agentlightning/algorithm/apo/apo.py` 中的 `textual_gradient_and_apply_edit`）：
 
-| Step | Template | Model (env var) | Input | Output |
+| 步骤 | 模板 | 模型（环境变量） | 输入 | 输出 |
 | --- | --- | --- | --- | --- |
-| Text gradient | `text_gradient_*.poml` | `APO_GRADIENT_MODEL` (default `gpt-4.1`) | Current prompt + a batch of rollout traces (messages, rewards) | A **critique**: a bullet list of concrete causes of low reward and testable changes |
-| Apply edit | `apply_edit_*.poml` | `APO_APPLY_EDIT_MODEL` (default `gpt-4.1-mini`) | Current prompt + the critique | The **rewritten prompt** for the next candidate |
+| 文本梯度 | `text_gradient_*.poml` | `APO_GRADIENT_MODEL`（默认 `gpt-4.1`） | 当前 prompt + 一批 rollout trace（消息、reward） | **批评**：低分的具体原因和可验证的修改建议（bullet list） |
+| 应用编辑 | `apply_edit_*.poml` | `APO_APPLY_EDIT_MODEL`（默认 `gpt-4.1-mini`） | 当前 prompt + 批评 | **改写后的 prompt**，作为下一个候选 |
 
-The critique is the "gradient" and the edit is the "update step" — the quality
-of both meta-prompts directly bounds the quality of the search.
+批评就是"梯度"，编辑就是"更新步"——这两个元 prompt 的质量直接决定搜索的
+上限。
 
-By default the framework picks a template *at random per expansion* from three
-gradient variants and two edit variants
-(`agentlightning/algorithm/apo/prompts/*.poml`). Passing a single file for each
-step (as this project does) also makes runs more reproducible.
+框架默认行为是每次扩展从 3 个 gradient 变体、2 个 edit 变体中*随机*选一个
+（`agentlightning/algorithm/apo/prompts/*.poml`）。像本项目这样每步只指定一个
+文件，还能让运行更可复现。
 
-## 2. Why the defaults are not enough here
+## 2. 为什么默认版在这里不够用
 
-The default templates are task-agnostic: they only say "raise reward" and let
-the gradient model infer the objective from the traces. For this project that
-leaves three real failure modes:
+默认模板与任务无关：只说"提高 reward"，让梯度模型自己从 trace 里推断目标。
+对本项目这留下三个真实的失效模式：
 
-1. **The edit model can silently drop the JSON contract.** Our reward scores
-   any output that is not a valid JSON object with exactly the five fields as
-   `0`. A rewrite that "simplifies" the format instruction produces a candidate
-   whose every rollout scores 0 — a whole expansion of the budget wasted.
-2. **The gradient model does not know the reward structure.** It cannot see
-   that the three text fields carry 0.6 of the weight while the two
-   classification fields carry 0.2 each, so critiques may chase low-value
-   fixes. It also does not know that content-safety-filter rejections depend
-   only on the input frames — without being told, it will blame the prompt for
-   failures the prompt cannot fix.
-3. **The edit model may add its own media placeholders.** In this project the
-   `<frame n | Xs>` placeholder section and the images are appended by the
-   agent at runtime *after* the tuned instruction; a rewrite that reintroduces
-   `<video>` or frame markers would duplicate or conflict with that section.
+1. **编辑模型可能悄悄弄丢 JSON 契约。** 我们的 reward 对任何"不是恰好含 5 个
+   字段的合法 JSON 对象"的输出直接记 0。一次"简化格式说明"的改写会让该候选
+   的所有 rollout 都得 0 分——整个扩展的预算白白浪费。
+2. **梯度模型不知道 reward 的结构。** 它看不出三个文本字段占 0.6 权重、两个
+   分类字段各占 0.2，批评可能追逐低价值的修改。它也不知道内容安全过滤器的
+   拒绝只取决于输入帧——不告诉它，它就会把 prompt 解决不了的失败归咎于
+   prompt。
+3. **编辑模型可能自作主张加媒体占位符。** 本项目中 `<frame n | Xs>` 占位符段
+   和图片是 agent 在运行时追加在被调优指令*之后*的；改写若重新引入 `<video>`
+   或帧标记，会与该段重复或冲突。
 
-One customization that other APO projects need is deliberately **absent**
-here: brace/placeholder protection. The example strict templates forbid
-literal `{`/`}` because their tuned prompt is rendered with Python
-`str.format`. Our agent uses the template text verbatim
-(`frame_agent.py`: `fixed_prompt = prompt_template.template`), so JSON
-examples with curly braces in the prompt are safe — and explicitly allowed.
+有一类其他 APO 项目需要的定制在这里被**刻意省略**：花括号/占位符保护。示例
+里的 strict 模板禁止字面 `{`/`}`，是因为它们的被调优 prompt 要经过 Python
+`str.format` 渲染。我们的 agent 原文直传模板文本
+（`frame_agent.py`：`fixed_prompt = prompt_template.template`），prompt 里出现
+带花括号的 JSON 示例是安全的——并且被明确允许。
 
-## 3. Final changes vs the framework defaults
+## 3. 相对框架默认版的最终改动
 
-Both files start from `*_variant01.poml` and change only what the table lists:
+两个文件都以 `*_variant01.poml` 为底，只改下表所列内容：
 
-| File | Change | Purpose |
+| 文件 | 改动 | 目的 |
 | --- | --- | --- |
-| `reward/v1/text_gradient_video2frames.poml` | Added **Optimization Objective** section: the 5-field valid-JSON contract (else 0), the 0.2/0.2/0.6 reward formula and judge criterion, and "content-filter rejections are not the prompt's fault" (`reward/v2/` ships its own variant describing the v2 objective) | Aim critiques at what actually moves the reward |
-| | Added **Critique Constraints** section: never suggest `<video>`/frame placeholders (runtime appends them), never rename/add/remove the five fields, JSON brace examples are allowed | Keep critiques inside the task's contract |
-| `prompts/apply_edit_video2frames.poml` | Removed "Preserve placeholder variables inside curly brackets" | Our template has no placeholders; the rule is misleading here |
-| | Added three revision rules: keep the 5-field valid-JSON requirement, never add `<video>`/frame placeholders, JSON brace examples allowed | Prevent rewrites from breaking the reward contract |
-| | Output format reworded to "return only the improved prompt text" | No placeholder wording |
+| `reward/v1/text_gradient_video2frames.poml` | 新增 **Optimization Objective** 一节：5 字段合法 JSON 契约（否则 0 分）、0.2/0.2/0.6 reward 公式与 judge 标准、"内容过滤器拒绝与 prompt 无关"（`reward/v2/` 自带描述 v2 目标的变体） | 让批评瞄准真正影响 reward 的方向 |
+| | 新增 **Critique Constraints** 一节：不许建议加 `<video>`/帧占位符（运行时追加）、不许改动 5 个字段名、允许带花括号的 JSON 示例 | 把批评限制在任务契约之内 |
+| `prompts/apply_edit_video2frames.poml` | 删掉 "Preserve placeholder variables inside curly brackets" | 我们的模板没有占位符，这条在此只会误导 |
+| | 新增三条改写规则：必须保留 5 字段合法 JSON 要求、不许加 `<video>`/帧占位符、允许花括号 JSON 示例 | 防止改写破坏 reward 契约 |
+| | output-format 改为"只返回改进后的 prompt 正文" | 去掉占位符相关措辞 |
 
-Everything else — the experiment loop, the `{{ prompt_template }}` /
-`{{ critique }}` / `{{ experiments }}` slots the algorithm fills in — is kept
-identical to the defaults, so the files stay drop-in compatible with
-`APO(gradient_prompt_files=..., apply_edit_prompt_files=...)`.
+其余部分——experiment 循环、算法填充的 `{{ prompt_template }}` /
+`{{ critique }}` / `{{ experiments }}` 槽位——与默认版完全一致，因此这两个文件
+可直接用于 `APO(gradient_prompt_files=..., apply_edit_prompt_files=...)`。
 
-## 4. Usage
+## 4. 使用方式
 
-`apo_train.py` uses the project templates **by default**, resolving them from
-the reward version's `apo_meta_prompts` config:
+`apo_train.py` **默认**使用项目定制模板，并按 reward 版本的
+`apo_meta_prompts` 配置解析：
 
 ```bash
-.venv/bin/python apo_train.py                 # v1: reward/v1/text_gradient_*.poml + prompts/apply_edit_*.poml
-.venv/bin/python apo_train.py --reward-version v2  # v2's own text-gradient
-.venv/bin/python apo_train.py --default-poml  # framework built-in templates
+.venv/bin/python apo_train.py                      # v1：reward/v1/text_gradient_*.poml + prompts/apply_edit_*.poml
+.venv/bin/python apo_train.py --reward-version v2  # v2 自己的 text-gradient
+.venv/bin/python apo_train.py --default-poml       # 框架内置模板
 ```
 
-`results/summary.json` records which set was used (`"custom_poml"` plus the
-full reward config including `apo_meta_prompts`), so A/B comparisons remain
-traceable. Offline tests in `tests/test_apo_train.py` guard the required
-template slots and the contract keywords.
+`results/summary.json` 会记录本次用的是哪套模板（`"custom_poml"` 字段，外加
+含 `apo_meta_prompts` 的完整 reward 配置），方便做可追溯的 A/B 对比。
+`tests/test_apo_train.py` 中的离线测试守护模板必需的槽位和契约关键词。
 
-If the reward changes after the customer conversation
-([reward-design.md](reward-design.md)) — e.g. new weights or per-field judge
-scores — that is a new reward version, and its **Optimization Objective**
-section must ship with it (`reward/<version>/text_gradient_*.poml`);
-`apo_train.py` refuses to run a version that does not declare one, so the
-search can never optimize against a stale description of the reward.
+如果与客户沟通后 reward 发生变化（见 [reward-design.md](reward-design.md)），
+例如调整权重或改成按字段打分，那就是一个新的 reward 版本，其
+**Optimization Objective** 必须随版本一起提供
+（`reward/<version>/text_gradient_*.poml`）——版本没有声明时 `apo_train.py`
+直接报错拒跑，搜索永远不会按过期的 reward 描述做优化。

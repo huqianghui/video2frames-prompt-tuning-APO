@@ -1,31 +1,27 @@
-# Reward v1 vs v2 Comparison Log
+# Reward v1 vs v2 对比记录
 
-**English** | [中文](reward-comparison.zh.md)
+[English](en-us/reward-comparison.md) | **中文**
 
-This document records the measured comparison between the two reward versions,
-at two levels:
+本文记录两个 reward 版本的实测对比。对比分两个层次：
 
-1. **Scale calibration (done, section 2)** — the same baseline prompt scored
-   under v1 and v2. Answers "how do the two reward scales and rankings
-   differ". v1 and v2 scores are **not directly comparable** (different
-   formulas, different strictness), so any cross-version comparison needs this
-   baseline first.
-2. **End-to-end comparison (pending, section 4)** — one full APO run per
-   reward version, producing `best_prompt_v1` / `best_prompt_v2`, followed by
-   a **2×2 evaluation** (both prompts × both rewards). Answers "which reward
-   drives APO to a better prompt".
+1. **刻度校准（已完成，本文第 2 节）**——同一个 baseline prompt 分别用 v1、v2
+   打分。回答"两个 reward 的量纲与排序差多少"。v1 分和 v2 分**不可直接比**
+   （公式不同、严格程度不同），任何跨版本的比较都必须先有这一步的基准。
+2. **端到端对比（待跑，本文第 4 节）**——分别用 v1、v2 各跑一次完整 APO 训练，
+   得到 `best_prompt_v1` / `best_prompt_v2`，再做 **2×2 评估**（两个 prompt ×
+   两个 reward）。回答"哪个 reward 能驱动 APO 产出更好的 prompt"。
 
-## 1. Run configuration (scale calibration)
+## 1. 运行配置（刻度校准）
 
-| Item | Value |
+| 项 | 值 |
 | --- | --- |
-| Date | 2026-07-17 |
-| Prompt | `data/baseline_prompt.txt` (untuned seed prompt) |
-| Split | `data/test.jsonl`, 30 tasks, sha256 prefix `d4993bcbaf1a` |
-| Generation model | `gpt-4.1-mini` (`AZURE_OPENAI_DEPLOYMENT`) |
-| Judge model | `gpt-4.1-mini` (same for both versions) |
-| Reward configs | `reward/v1/config.yaml`, `reward/v2/config.yaml`, both defaults |
-| Execution | macOS serial (~4 min per pass) |
+| 日期 | 2026-07-17 |
+| Prompt | `data/baseline_prompt.txt`（未调优的种子 prompt） |
+| Split | `data/test.jsonl`，30 条，sha256 前缀 `d4993bcbaf1a` |
+| 生成模型 | `gpt-4.1-mini`（`AZURE_OPENAI_DEPLOYMENT`） |
+| Judge 模型 | `gpt-4.1-mini`（两个版本相同） |
+| Reward 配置 | `reward/v1/config.yaml`、`reward/v2/config.yaml` 均为默认值 |
+| 执行方式 | macOS 串行（每轮约 4 分钟） |
 
 ```bash
 .venv/bin/python evaluate.py --name baseline_v1 --reward-version v1
@@ -33,21 +29,21 @@ at two levels:
 .venv/bin/python compare_rewards.py results/eval_baseline_v1.json results/eval_baseline_v2.json
 ```
 
-Detail files (including the join) live in the local `results/` (not in git).
+明细文件（含 join 结果）在本机 `results/` 下（git 不入库）。
 
-## 2. Results
+## 2. 结果
 
-### Overall and per family
+### 总体与按 family
 
 | | v1 | v2 |
 | --- | --- | --- |
-| **Overall mean (30 tasks)** | **0.734** | **0.522** |
-| Charades (22) | 0.757 | 0.560 |
-| NWPU (2) | 0.691 | 0.518 |
-| VIRAT (2) | 0.838 | 0.674 |
-| project (4) | 0.577 | **0.239** |
+| **整体均值（30 条）** | **0.734** | **0.522** |
+| Charades（22） | 0.757 | 0.560 |
+| NWPU（2） | 0.691 | 0.518 |
+| VIRAT（2） | 0.838 | 0.674 |
+| project（4） | 0.577 | **0.239** |
 
-### Per task (sorted by drop v2−v1)
+### 逐任务（按 B−A 降幅排序）
 
 | task | family | v1 | v2 | Δ(v2−v1) |
 | --- | --- | --- | --- | --- |
@@ -82,276 +78,244 @@ Detail files (including the join) live in the local `results/` (not in git).
 | 2152 | Charades | 0.940 | 0.867 | −0.073 |
 | 1735 | Charades | 0.892 | 0.855 | −0.037 |
 
-## 3. Interpretation
+## 3. 解读
 
-1. **v2 scoring lower across the board is by design, not a regression.**
-   Per-field judges are stricter, rule compliance carries 0.25 weight, and
-   scene/courier mistakes multiply the score down (×0.5 / ×0.3 / ×0.2); any
-   weak spot directly depresses the total.
-2. **v2 discriminates much harder.** The project family drops to 0.239
-   (still 0.577 under v1); the best-vs-worst family spread widens from 0.26
-   (v1) to 0.44 (v2). For APO this means a steeper gradient signal — "what
-   went wrong" is more visible in the score.
-3. **The two rewards agree on direction.** All 30 tasks score v2 < v1 with
-   broadly the same ranking, so v2 does not distort the objective; it is
-   stricter and more granular.
-4. **Attribution of the biggest drops (from v2 component logs):**
-   - `5540` / `2577`: courier false-positive gate fired (×0.3), on top of a
-     low `judge_detail` (0.34 / 0.28).
-   - `5266`: scene gate fired (×0.5). Note the v1 pass got the scene right —
-     see the noise caveat below.
-   - `375`: no gate; `rule_no_meta_words` failed (camera/frame/timestamp-type
-     wording) plus very low per-field judge scores (0.18/0.18/0.03).
+1. **v2 全面更低是设计使然，不代表输出变差。** 分字段 judge 更严、规则合规
+   占 0.25 权重、场景/快递错误以乘法砍分（×0.5 / ×0.3 / ×0.2），任何一处
+   短板都会直接压低总分。
+2. **v2 的区分度显著更大。** project family 被拉到 0.239（v1 下还有
+   0.577），最好与最差 family 的差距从 v1 的 0.26 拉大到 v2 的 0.44。对
+   APO 而言这意味着更陡的梯度信号——"哪里错了"在分数上更可见。
+3. **两个 reward 方向一致。** 30 条任务全部 v2 < v1、排序大体相同，说明 v2
+   没有扭曲优化方向，只是更严、更细。
+4. **大降幅任务的归因（来自 v2 组件日志）：**
+   - `5540` / `2577`：courier 误报硬门触发（×0.3），叠加较低的
+     `judge_detail`（0.34 / 0.28）。
+   - `5266`：场景硬门触发（×0.5）。注意 v1 那轮运行里 scene 是判对的——
+     见下面的噪声说明。
+   - `375`：没有硬门；`rule_no_meta_words` 不合规（提到了
+     camera/frame/timestamp 类词）+ 分字段 judge 很低（0.18/0.18/0.03）。
 
-**Noise caveat (important):** each evaluation pass re-calls the generation
-model, so v1 and v2 scored **different generations**. Per-task deltas mix
-"reward definition difference" with "generation variance" (e.g. `5266`'s
-scene was correct in the v1 pass and wrong in the v2 pass). The mean-level
-conclusions (v2 stricter, more discriminative, direction-consistent) are
-unaffected, but do not over-read any single task's Δ. To strictly isolate the
-reward definitions, cache one set of generations and re-score them offline.
+**噪声说明（重要）：** 两轮评估各自重新调用生成模型，所以 v1、v2 打分的是
+**不同的生成结果**。逐任务的 Δ 混合了"reward 定义差异"和"生成方差"两种
+来源（如 `5266` 的场景在 v1 那轮生成里是对的、v2 那轮错了）。**均值层面**
+的结论（v2 更严、区分度更大、方向一致）不受影响，但不要过度解读单条任务的
+Δ。若需要严格隔离 reward 定义差异，应缓存同一批生成结果、离线重打分。
 
-## 4. Next step: end-to-end comparison (Linux, high concurrency)
+## 4. 下一步：端到端对比（Linux 高并发）
 
-On a Linux VM (Python ≤ 3.13, `fork` start method) run one APO training per
-reward version, then the 2×2 evaluation:
+在 Linux VM（Python ≤ 3.13，`fork` 启动方式）上分别用两个 reward 各跑一次
+APO，然后做 2×2 评估：
 
 ```bash
-# Two trainings (pick beam/batch per doc/performance-tuning.md; big-VM example)
+# 两次训练（beam/批量参数按 doc/performance-tuning.md 选择；大 VM 示例）
 .venv/bin/python apo_train.py --reward-version v1 --n-runners 12 --gradient-batch-size 8
 .venv/bin/python apo_train.py --reward-version v2 --n-runners 12 --gradient-batch-size 8
-# Note each results/<run_id>/ (results/latest only points at the newest run!)
+# 记下各自的 results/<run_id>/（results/latest 只指向最近一次！）
 
-# 2×2 evaluation: each best prompt scored under both rewards
+# 2×2 评估：两个 best prompt 各在两个 reward 下打分
 .venv/bin/python evaluate.py --prompt results/<run_v1>/best_prompt.txt --name tuned_v1_under_v1 --reward-version v1
 .venv/bin/python evaluate.py --prompt results/<run_v1>/best_prompt.txt --name tuned_v1_under_v2 --reward-version v2
 .venv/bin/python evaluate.py --prompt results/<run_v2>/best_prompt.txt --name tuned_v2_under_v1 --reward-version v1
 .venv/bin/python evaluate.py --prompt results/<run_v2>/best_prompt.txt --name tuned_v2_under_v2 --reward-version v2
 
-# Compare (only same-reward-scale comparisons are meaningful)
+# 对比（同一 reward 刻度下比较两个 prompt 才有意义）
 .venv/bin/python compare_rewards.py results/eval_tuned_v1_under_v1.json results/eval_tuned_v2_under_v1.json
 .venv/bin/python compare_rewards.py results/eval_tuned_v1_under_v2.json results/eval_tuned_v2_under_v2.json
 ```
 
-How to read the results:
+判读方法：
 
-- Use section 2's baseline numbers as the anchor; measure each tuned prompt's
-  improvement over baseline *within the same reward scale*.
-- If `tuned_v2` is no worse than `tuned_v1` on the **v1 scale** and clearly
-  better on the v2 scale, v2's extra signal (per-field judges, rules, gates)
-  delivered real gains rather than overfitting its own formula.
-- Classification accuracy (scene/courier) can be tallied from the component
-  details in `results/eval_*.json` or the run logs as an objective yardstick
-  independent of either reward scale.
+- 以本文第 2 节的 baseline 数字为基线，看每个 tuned prompt 相对 baseline
+  的提升（同一 reward 刻度内比较）。
+- `tuned_v2` 若在 **v1 刻度**下也不差于 `tuned_v1`，且在 v2 刻度下明显更好，
+  说明 v2 的额外信号（分字段、规则、硬门）产生了真实收益而非过拟合自身公式。
+- 分类字段（scene/courier）的准确率可从 `results/eval_*.json` 的组件明细
+  或运行日志统计，作为不依赖任一 reward 刻度的客观参照。
 
-Fill in section 5 once the runs finish.
+结果出来后回填本文第 5 节。
 
-## 5. End-to-end results (2026-07-17, Linux VM)
+## 5. 端到端对比结果（2026-07-17，Linux VM）
 
-### Run configuration
+### 运行配置
 
-| Item | Value |
+| 项 | 值 |
 | --- | --- |
-| Date | 2026-07-17 (Linux VM, parallel runners) |
-| Data | `prepare_data.py --train-size 80 --val-size 100 --freeze-test --probe-content-filter` (train 80 / val 100 / test 30) |
-| APO run (v1 reward) | `results/20260717_143056/` |
-| APO run (v2 reward) | `results/20260717_145308/` |
-| Beam / batch parameters | see each run's `summary.json` on the VM (not copied here) |
+| 日期 | 2026-07-17（Linux VM，并行 runner） |
+| 数据 | `prepare_data.py --train-size 80 --val-size 100 --freeze-test --probe-content-filter`（train 80 / val 100 / test 30） |
+| APO 运行（v1 reward） | `results/20260717_143056/` |
+| APO 运行（v2 reward） | `results/20260717_145308/` |
+| Beam / 批量参数 | 见 VM 上各运行目录的 `summary.json`（未拷贝到本机） |
 
-> **Test-split caveat:** the frozen `test.jsonl` on the VM (sha256 prefix
-> `b5065f2d3016`) is **not** the split used for the section-2 scale
-> calibration (different task IDs — e.g. 2282/4221/… vs 5266/375/…, and it
-> contains a `ucf_crime` task the old split did not). The section-2 baseline
-> anchors (v1 0.734 / v2 0.522) do not apply; the baseline prompt was
-> therefore **re-evaluated on this split** (2026-07-18) to provide the anchor
-> row below.
+> **Test split 注意：** VM 上冻结的 `test.jsonl`（sha256 前缀
+> `b5065f2d3016`）**不是**第 2 节刻度校准用的那个 split（任务 ID 不同——
+> 2282/4221/… vs 5266/375/…，且包含旧 split 没有的 `ucf_crime` 任务）。
+> 第 2 节的 baseline 锚点（v1 0.734 / v2 0.522）不适用；因此已在该 split
+> 上**重新评估 baseline prompt**（2026-07-18），即下表的锚点行。
 
-### 2×3 matrix (mean_reward on test, 30 tasks)
+### 2×3 矩阵（test 上的 mean_reward，30 条）
 
-| | scored under v1 | scored under v2 |
+| | v1 刻度打分 | v2 刻度打分 |
 | --- | --- | --- |
-| `baseline` (seed prompt) | 0.7552 | 0.5686 |
-| `tuned_v1` (best of v1-reward run) | 0.7509 (−0.004) | 0.5993 (+0.031) |
-| `tuned_v2` (best of v2-reward run) | **0.7609** (+0.006) | **0.6033** (+0.035) |
+| `baseline`（种子 prompt） | 0.7552 | 0.5686 |
+| `tuned_v1`（v1-reward 运行的 best） | 0.7509（−0.004） | 0.5993（+0.031） |
+| `tuned_v2`（v2-reward 运行的 best） | **0.7609**（+0.006） | **0.6033**（+0.035） |
 
-(Deltas in parentheses are vs baseline on the same scale.)
+（括号内为同刻度下相对 baseline 的差值。）
 
-Training-side numbers (val, 100 tasks): v1 run seed 0.764 → best 0.798;
-v2 run seed 0.594 → best 0.643. Beam 2/2/2 in both runs; in **both** runs
-every round-2 child scored below its round-1 parent, i.e. all gains came
-from the first edit and the search saturated after one round.
+训练侧数字（val，100 条）：v1 运行种子 0.764 → best 0.798；v2 运行种子
+0.594 → best 0.643。两次运行 beam 均为 2/2/2；且**两次运行中所有第 2 轮
+子候选的得分都低于其第 1 轮父候选**——即全部收益来自第一次编辑，搜索在
+一轮后就饱和了。
 
-Per-task win/loss for `tuned_v2` vs `tuned_v1`:
+`tuned_v2` vs `tuned_v1` 的逐任务胜负：
 
-- v1 scale: 13 win / 11 loss / 6 tie; v2 scale: 14 win / 15 loss / 1 tie.
-- Per-family means point in no consistent direction (tuned_v2 better on
-  Charades and ucf_crime, worse on NWPU/VIRAT/project under v1 scale; mixed
-  under v2 scale).
+- v1 刻度：13 胜 / 11 负 / 6 平；v2 刻度：14 胜 / 15 负 / 1 平。
+- 按 family 的均值没有一致方向（v1 刻度下 tuned_v2 在 Charades、ucf_crime
+  上更好，在 NWPU/VIRAT/project 上更差；v2 刻度下互有胜负）。
 
-### Conclusion
+### 结论
 
-With the baseline anchor in place the picture is sharper than "statistical
-tie":
+有了 baseline 锚点之后，结论比"统计平局"更清晰：
 
-- **On the v1 scale nothing improved** — tuned_v1 −0.004, tuned_v2 +0.006,
-  both within noise. The coarse semantic judge (0.6 weight in v1) saw no
-  difference from either tuned prompt.
-- **On the v2 scale both tuned prompts improved by ~+0.03** — including
-  `tuned_v1`, which never saw the v2 reward during training. What actually
-  improved is the part v2 measures explicitly and v1 barely does: rule
-  compliance and field structure (deterministic, prompt-fixable), not the
-  semantic content of the descriptions.
-- Head-to-head, `tuned_v2` vs `tuned_v1` remains within noise on both scales
-  (+0.010 / +0.004; per-task near coin-flip).
+- **v1 刻度下什么都没提升**——tuned_v1 −0.004、tuned_v2 +0.006，均在噪声
+  内。v1 的粗粒度语义 judge（0.6 权重）看不出任何一个 tuned prompt 的差别。
+- **v2 刻度下两个 tuned prompt 都提升约 +0.03**——包括训练时从没见过 v2
+  reward 的 `tuned_v1`。真正被改善的是 v2 显式度量、而 v1 几乎不度量的
+  部分：规则合规与字段结构（确定性的、prompt 可修复的），而不是描述的
+  语义内容。
+- 两个 tuned prompt 正面对比仍在噪声内（+0.010 / +0.004，逐任务接近
+  抛硬币）。
 
-### Diagnosis: why the gain is ~0.04 regardless of the "wider" v2 scale
+### 诊断：为什么 v2 把刻度"打开"了，提升还是只有 ~0.04
 
-Evidence from `report.json` (per-candidate val reward vectors) and the
-gradient critiques:
+以下证据来自 `report.json`（每个候选的 val 逐任务 reward 向量）和
+gradient 批评文本：
 
-1. **v2 widened the scale along the task axis, not the prompt axis.** v2's
-   lower baseline (0.57 vs 0.76) comes from harsher scoring of *hard tasks*
-   (per-field judges, gates on visually ambiguous videos). That headroom is
-   claimable by a better vision model, not by instruction wording. What a
-   prompt edit can actually move — the deterministic rule-compliance slice
-   (0.25 weight) plus marginal judge gains — is worth roughly +0.03–0.05,
-   and APO captured almost exactly that (+0.035 on test).
-2. **Between-candidate spread ≈ measurement noise.** Across the 9 candidates
-   per run, val means span ~0.05 while the SE of a candidate mean (n=100,
-   per-task SD ~0.12) is ~0.011–0.013. Most candidates are statistically
-   indistinguishable, so beam selection among the mid-pack is noisy.
-3. **Per-task churn is huge and mostly cancels.** In the v2 run, best-vs-seed
-   per-task deltas range −0.40…+0.65 (26 tasks improve >0.2, 12 regress
-   >0.2); the +0.049 val mean gain is a small residual of large opposing
-   movements dominated by generation/judge variance.
-4. **The search saturated after one edit.** In both runs all four round-2
-   children scored below their round-1 parents. More rounds at this
-   configuration would not have helped; the first critique already harvested
-   the low-hanging fruit (the critiques overwhelmingly target rule
-   compliance — word caps, exactly-five-keys, person-not-gendered,
-   no-meta-words — "gate" is mentioned once across all gradients).
-5. **Gates did respond on val** (seed had 4 val tasks below 0.3, best had 0),
-   but gate-triggering is largely content-driven, so the effect is small and
-   does not transfer cleanly to test.
+1. **v2 打开的是任务轴，不是 prompt 轴。** v2 baseline 更低（0.57 vs
+   0.76）来自对*难任务*的更严打分（分字段 judge、视觉歧义视频上的硬门）。
+   这部分余量要靠更强的视觉模型才能吃到，靠改指令措辞吃不到。prompt 编辑
+   真正能动的——确定性的规则合规部分（0.25 权重）加边际的 judge 提升——
+   大约值 +0.03–0.05，而 APO 恰好拿到了这么多（test 上 +0.035）。
+2. **候选间差距 ≈ 测量噪声。** 每次运行 9 个候选的 val 均值跨度约 0.05，
+   而单个候选均值的 SE（n=100，逐任务 SD 约 0.12）约 0.011–0.013。大多数
+   候选在统计上不可区分，中游候选的 beam 选择近乎随机。
+3. **逐任务的涨跌巨大且互相抵消。** v2 运行里 best 对种子的逐任务差值
+   在 −0.40…+0.65 之间（26 条涨超 0.2，12 条跌超 0.2）；+0.049 的 val
+   均值提升只是巨大反向波动的微小残差，主导因素是生成/judge 方差。
+4. **搜索一轮就饱和。** 两次运行的 4 个第 2 轮子候选全部低于父候选。这个
+   配置下加轮数不会有用；第一次批评已经摘完了低垂果实（批评文本几乎全部
+   针对规则合规——字数上限、恰好五键、person 替代性别词、不提 meta 词——
+   所有 gradient 里"gate"只出现 1 次）。
+5. **硬门在 val 上确实有反应**（种子有 4 条 val 任务低于 0.3，best 为
+   0 条），但硬门触发主要由视频内容驱动，效应小、且不能干净地迁移到 test。
 
-### Evidence appendix (numbers behind the diagnosis)
+### 证据附录（诊断背后的具体数字）
 
-All numbers computed from `results/<run_id>/report.json` (per-candidate
-100-task val reward vectors) and the gradient critique texts embedded in it.
+以下数字全部由 `results/<run_id>/report.json`（每个候选的 100 条 val
+逐任务 reward 向量）及其内嵌的 gradient 批评文本计算得出。
 
-**A. Candidate val scores (9 candidates per run).**
+**A. 各候选的 val 分数（每次运行 9 个候选）。**
 
-| Candidate | v1 run (parent) | v2 run (parent) |
+| 候选 | v1 运行（父候选） | v2 运行（父候选） |
 | --- | --- | --- |
-| v0 seed | 0.764 | 0.594 |
-| v1 (R1, v0) | 0.788 | 0.637 |
-| v2 (R1, v0) | 0.774 | 0.615 |
-| v3 (R1, v0) | 0.781 | **0.643** |
-| v4 (R1, v0) | 0.773 | 0.615 |
-| v5 (R2) | 0.746 (← v3) | 0.613 (← v1) |
-| v6 (R2) | 0.740 (← v3) | 0.617 (← v1) |
-| v7 (R2) | 0.775 (← v1) | 0.627 (← v3) |
-| v8 (R2) | 0.784 (← v1) | 0.617 (← v3) |
+| v0 种子 | 0.764 | 0.594 |
+| v1（R1，v0） | 0.788 | 0.637 |
+| v2（R1，v0） | 0.774 | 0.615 |
+| v3（R1，v0） | 0.781 | **0.643** |
+| v4（R1，v0） | 0.773 | 0.615 |
+| v5（R2） | 0.746（← v3） | 0.613（← v1） |
+| v6（R2） | 0.740（← v3） | 0.617（← v1） |
+| v7（R2） | 0.775（← v1） | 0.627（← v3） |
+| v8（R2） | 0.784（← v1） | 0.617（← v3） |
 
-Every round-2 child scores below its parent in **both** runs (8 of 8
-regressions) — the basis for "the search saturated after one edit".
+**两次运行的所有第 2 轮子候选都低于其父候选**（8 个全部退化）——这就是
+"搜索一轮后饱和"的依据。
 
-**B. Noise floor vs candidate spread.** Mean per-task reward SD across
-candidates: 0.113 (v1 run) / 0.133 (v2 run). With n=100 val tasks, the SE of
-a candidate mean is 0.0113 / 0.0133. Candidate mean spread (max−min): 0.057
-(v1 run) / 0.049 (v2 run) — i.e. the whole field spans ~4 SE and the
-mid-pack differs by ≤1–2 SE, so beam selection among them is noise-driven.
+**B. 噪声底 vs 候选间差距。** 逐任务 reward 的平均 SD：0.113（v1 运行）/
+0.133（v2 运行）。val n=100 时单候选均值的 SE 为 0.0113 / 0.0133。候选
+均值跨度（max−min）：0.057（v1 运行）/ 0.049（v2 运行）——整个候选群只
+横跨约 4 个 SE，中游候选相差不到 1–2 个 SE，它们之间的 beam 选择由噪声
+主导。
 
-**C. Per-task churn, best vs seed (same val split).**
+**C. best 对种子的逐任务涨跌（同一 val split）。**
 
-| | v1 run (v1−v0) | v2 run (v3−v0) |
+| | v1 运行（v1−v0） | v2 运行（v3−v0） |
 | --- | --- | --- |
-| Mean delta | +0.034 | +0.049 |
-| Delta quantiles (min/q1/med/q3/max) | −0.42 / −0.07 / +0.03 / +0.14 / +0.50 | −0.40 / −0.09 / +0.03 / +0.20 / +0.65 |
-| Tasks improved > 0.2 | 13 | 26 |
-| Tasks regressed > 0.2 | 10 | 12 |
+| 平均差值 | +0.034 | +0.049 |
+| 差值分位数（min/q1/中位/q3/max） | −0.42 / −0.07 / +0.03 / +0.14 / +0.50 | −0.40 / −0.09 / +0.03 / +0.20 / +0.65 |
+| 涨幅 > 0.2 的任务数 | 13 | 26 |
+| 跌幅 > 0.2 的任务数 | 10 | 12 |
 
-The net mean gain is a small residual of large opposing per-task movements —
-generation/judge variance dominates individual tasks.
+均值上的净提升只是巨大反向波动的微小残差——单条任务的表现由生成/judge
+方差主导。
 
-**D. Gate response on val (v2 run).** Val tasks with reward < 0.3 (gated or
-failed): seed v0 = 4, best v3 = 0.
+**D. 硬门在 val 上的反应（v2 运行）。** reward < 0.3（触发硬门或失败）的
+val 任务数：种子 v0 = 4 条，best v3 = 0 条。
 
-**E. What the critiques actually talk about.** Keyword counts across all
-gradient critiques in the v2 run: "rule" 45, "courier" 30, "scene" 29,
-"compliance" 9, "judge" 2, "gate" 1. The critic's actionable suggestions
-overwhelmingly target the deterministic rule-compliance slice (word caps,
-exactly-five-keys, person-not-gendered, no meta words) — consistent with
-the cross-scale result that rule compliance is what improved.
+**E. 批评文本实际在谈什么。** v2 运行所有 gradient 批评文本的关键词计数：
+"rule" 45 次、"courier" 30 次、"scene" 29 次、"compliance" 9 次、
+"judge" 2 次、"gate" 1 次。critic 给出的可操作建议压倒性地指向确定性的
+规则合规部分（字数上限、恰好五键、person 替代性别词、不提 meta 词）——
+与下面 F 的跨刻度结果一致：被改善的正是规则合规。
 
-**F. Cross-scale transfer.** `tuned_v1` (trained only against v1) gains
-+0.031 on the v2 scale but −0.004 on its own v1 scale; `tuned_v2` gains
-+0.035 / +0.006 respectively. Both prompts improved the same thing — the
-component that only v2 measures explicitly (rules/structure). If the tuned
-prompts had improved semantic description quality, the v1 scale (0.6 judge
-weight) would have moved too. It did not.
+**F. 跨刻度迁移。** 只在 v1 下训练的 `tuned_v1` 在 v2 刻度上 +0.031、在
+自己的 v1 刻度上却 −0.004；`tuned_v2` 分别为 +0.035 / +0.006。两个 prompt
+改善的是同一样东西——只有 v2 显式度量的那部分（规则/结构）。如果 tuned
+prompt 真的改善了语义描述质量，v1 刻度（0.6 judge 权重）也应该动。它没动。
 
-### Follow-ups (in priority order)
+### 后续动作（按优先级）
 
-1. **Decompose before optimizing further**: from `results/eval_*.json`
-   component details, average rule_compliance, per-field judge scores and
-   gate rates for baseline vs tuned. This tells how much prompt-fixable
-   headroom actually remains (likely little) vs perception-bound headroom.
-2. **If judge_detail is the ceiling, improve the input, not the prompt**:
-   more/denser frames, higher resolution, or a stronger multimodal
-   deployment (`AZURE_OPENAI_DEPLOYMENT`). Prompt tuning cannot make the
-   model see what the frames don't show.
-3. **Reduce noise so APO can climb finer gradients**: `judge_samples: 3` in
-   `reward/v2/config.yaml`; consider caching generations and re-scoring
-   offline to separate reward effects from generation variance.
-4. **Reshape the beam, don't deepen it**: round 2 regressed in both runs, so
-   spend budget on first-round diversity instead — e.g.
-   `--branch-factor 4..6 --beam-rounds 2` — and enlarge
-   `--gradient-batch-size` so critiques see more failure modes (including
-   gate-firing tasks).
-5. **Audit remaining gate-firing test tasks by eye**: if scene/courier are
-   genuinely ambiguous in the frames, that is a data/labeling question for
-   the customer, not a prompt problem.
-6. **Test split is small (30)** — mean SE alone is ~0.02–0.03; resolving
-   0.01-level effects needs a larger test split (see
-   [dataset-sizing.md](dataset-sizing.md)).
+1. **先分解再继续优化**：从 `results/eval_*.json` 的组件明细统计 baseline
+   vs tuned 的 rule_compliance、分字段 judge 均值和硬门触发率，量化还剩
+   多少 prompt 可修复的余量（很可能已不多）vs 感知能力封顶的余量。
+2. **若 judge_detail 是天花板，改输入而不是改 prompt**：更多/更密的帧、
+   更高分辨率、或更强的多模态部署（`AZURE_OPENAI_DEPLOYMENT`）。prompt
+   调优无法让模型看见帧里没有的东西。
+3. **降噪让 APO 能爬更细的梯度**：`reward/v2/config.yaml` 设
+   `judge_samples: 3`；考虑缓存生成结果离线重打分，把 reward 效应与生成
+   方差分离。
+4. **改 beam 形状而不是加深**：两次运行第 2 轮都在退化，预算应花在第一轮
+   多样性上——如 `--branch-factor 4..6 --beam-rounds 2`——并加大
+   `--gradient-batch-size` 让批评看到更多失败模式（包括触发硬门的任务）。
+5. **人工复核 test 上仍触发硬门的任务**：若 scene/courier 在帧里确实
+   有歧义，那是要与客户讨论的数据/标注问题，不是 prompt 问题。
+6. **Test split 太小（30 条）**——仅均值 SE 就有约 0.02–0.03；要分辨 0.01
+   量级的效应需要更大的 test split（见
+   [dataset-sizing.md](dataset-sizing.md)）。
 
-## 6. Target-model probe: gpt-5.4 (2026-07-18, preliminary)
+## 6. Target 模型探测：gpt-5.4（2026-07-18，初步）
 
-Follow-up #2 above, executed: same untuned baseline prompt, same frozen test
-split (30 tasks, `b5065f2d3016`), same v2 reward and judge (`gpt-4.1-mini`),
-only `AZURE_OPENAI_DEPLOYMENT` switched from `gpt-4.1-mini` to `gpt-5.4`.
-Single pass (`results/eval_baseline_gpt54_v2.json`).
+即上面后续动作第 2 条的执行：同一个未调优 baseline prompt、同一个冻结
+test split（30 条，`b5065f2d3016`）、同样的 v2 reward 和 judge
+（`gpt-4.1-mini`），只把 `AZURE_OPENAI_DEPLOYMENT` 从 `gpt-4.1-mini` 换成
+`gpt-5.4`。单次运行（`results/eval_baseline_gpt54_v2.json`）。
 
-| target model (baseline prompt, v2 scale) | mean_reward |
+| target 模型（baseline prompt，v2 刻度） | mean_reward |
 | --- | --- |
 | gpt-4.1-mini | 0.5686 |
-| **gpt-5.4** | **0.6095 (+0.041)** |
-| reference: tuned_v2 @ gpt-4.1-mini | 0.6033 |
+| **gpt-5.4** | **0.6095（+0.041）** |
+| 参照：tuned_v2 @ gpt-4.1-mini | 0.6033 |
 
-Per-task paired stats (gpt-5.4 − gpt-4.1-mini, same task IDs):
+逐任务配对统计（gpt-5.4 − gpt-4.1-mini，同一批任务 ID）：
 
-- 17 tasks up / 13 down; delta quantiles −0.51 / −0.04 / +0.02 / +0.13 / +0.52.
-- Paired delta SD 0.193 → SE of the mean delta (n=30) = 0.035, so
-  **+0.041 ≈ 1.2 SE — directionally positive, not yet conclusive.**
-- Tasks below 0.3 (gated/failed): 3 → 1.
-- Family means: project 0.487→0.553, Charades 0.581→0.606, VIRAT 0.493→0.826;
-  biggest regressions `2023` (−0.51, landing at 0.28, likely a gate) and
-  `482` (−0.39) — gpt-5.4 appears to make *different* mistakes, worth a
-  component-level look.
+- 17 条涨 / 13 条跌；差值分位数 −0.51 / −0.04 / +0.02 / +0.13 / +0.52。
+- 配对差值 SD 0.193 → 均值差的 SE（n=30）= 0.035，即
+  **+0.041 ≈ 1.2 个 SE——方向为正，但尚不足以下结论。**
+- 低于 0.3（触发硬门/失败）的任务：3 条 → 1 条。
+- Family 均值：project 0.487→0.553、Charades 0.581→0.606、
+  VIRAT 0.493→0.826；最大退化为 `2023`（−0.51，落到 0.28，疑似触发
+  硬门）和 `482`（−0.39）——gpt-5.4 犯的似乎是*不同类型*的错，
+  值得看组件明细。
 
-**Reading:** the model swap alone (+0.041, zero tuning) matches or exceeds
-the entire APO gain on the old model (+0.035), and the untuned prompt on
-gpt-5.4 already beats the tuned prompt on gpt-4.1-mini — consistent with the
-section-5 diagnosis that the remaining headroom is perception-bound, not
-prompt-bound.
+**判读：** 仅换模型（+0.041，零调优）就追平甚至超过了旧模型上整个 APO
+的收益（+0.035），且未调优 prompt 在 gpt-5.4 上已经超过旧模型上的调优
+prompt——与第 5 节"剩余空间在感知、不在 prompt"的诊断一致。
 
-**Pending before switching:** (1) two repeat passes
-(`--name baseline_gpt54_v2_r2/_r3`) to average out generation variance;
-(2) component details for `2023`/`482` (which gate or rule fired — if
-gpt-5.4's failures are verbosity/rule-type, they are prompt-fixable and a
-re-run of APO on the new target has extra headroom); (3) transfer check of
-the old tuned prompt
-(`evaluate.py --prompt results/20260717_145308/best_prompt.txt --name tuned_v2_gpt54 --reward-version v2`);
-(4) if confirmed, re-run APO with target gpt-5.4 (v2 reward,
-`--branch-factor 4`, `judge_samples: 3`).
+**切换前待办：**（1）再重复跑 2 遍（`--name baseline_gpt54_v2_r2/_r3`）
+平均掉生成方差；（2）查 `2023`/`482` 的组件明细（触发的是哪个硬门或
+规则——如果 gpt-5.4 的失败属于啰嗦/规则类，那正是 prompt 可修复的，在新
+target 上重跑 APO 反而有额外空间）；（3）测旧 tuned prompt 的迁移性
+（`evaluate.py --prompt results/20260717_145308/best_prompt.txt --name tuned_v2_gpt54 --reward-version v2`）；
+（4）确认后在 gpt-5.4 上重跑 APO（v2 reward、`--branch-factor 4`、
+`judge_samples: 3`）。

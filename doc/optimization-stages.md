@@ -1,167 +1,136 @@
-# APO Optimization Stage Guide: Ordering the Model / Data / Prompt Levers
+# APO 优化阶段指南：模型、数据、Prompt 三个杠杆怎么排序
 
-**English** | [中文](optimization-stages.zh.md)
+[English](en-us/optimization-stages.md) | **中文**
 
-When picking up or resuming this project, the key question is not "how do I
-tune the prompt" but **"which stage am I in, and which lever should I pull"**.
-This document turns the conclusions of the 2026-07 end-to-end experiments
-([reward-comparison.md](reward-comparison.md) sections 5–6) into an actionable
-stage roadmap: locate first, act second, and avoid pulling the wrong lever at
-the wrong stage.
+新接手或恢复这个项目时，最重要的问题不是"怎么调 prompt"，而是**"当前处于
+哪个阶段、该拉哪个杠杆"**。本文把 2026-07 两次端到端实验
+（[reward-comparison.md](reward-comparison.md) 第 5–6 节）的结论固化成
+一个可操作的阶段路线图：先定位、再行动，避免在错的阶段用错的杠杆。
 
-## 0. Core conclusion: the three levers live on different axes
+## 0. 核心结论：三个杠杆不在同一个维度上
 
-| Lever | Score it can move | Nature | Measured evidence |
+| 杠杆 | 能动的分数 | 特性 | 实测证据 |
 | --- | --- | --- | --- |
-| **Swap the target model** | +0.04 and up, **the only lever that raises the ceiling** | Gains come from perception (the 0.45-weight judge_detail slice), which prompts cannot reach | gpt-5.4 with zero tuning: +0.041; the untuned prompt already beats the tuned prompt on the old model |
-| **APO prompt tuning** | +0.03–0.05, **a one-time dividend** | Only harvests the deterministic rule-compliance slice (0.25 weight); one edit round exhausts it | All gains in both runs came from round 1; 8/8 round-2 children regressed |
-| **Data size** | +0, but decides **whether you can see the other two** | Produces no gains, only measurement resolution | Paired SE at test=30 is 0.035 ≥ the 0.03–0.04 effects being measured, so every conclusion stays "not yet conclusive" |
+| **换 target 模型** | +0.04 起步，**唯一能抬天花板的** | 收益来自感知能力（judge_detail 那 0.45 权重），prompt 够不到 | gpt-5.4 零调优 +0.041；未调优 prompt 已超旧模型的调优 prompt |
+| **APO 调 prompt** | +0.03–0.05，**一次性红利** | 只能收割确定性的规则合规切片（0.25 权重），一轮编辑摘完就饱和 | 两次 run 全部收益来自第一轮；8/8 个第二轮子候选退化 |
+| **Data size** | +0，但决定**能不能看见前两者** | 不产生收益，产生测量分辨率 | test=30 的配对 SE 0.035 ≥ 要测的效应 0.03–0.04，结论永远"尚不足以下定论" |
 
-In one line: **the model raises the ceiling, the prompt pays a one-time
-dividend, the data sets the ruler's precision.**
+一句话：**模型抬天花板、prompt 收一次性红利、数据定尺子精度。**
 
-**What "perception" means precisely**: the model does receive the frame
-images, but *cannot discern* what happened from the sampled frames (actions
-too subtle, information lost between frames, objects too small), so the
-generated english_detail misses or invents events — the description is
-genuinely wrong, not a scoring artifact. Instructions change *how things are
-said*, not *what was seen*; that gap is forever out of a prompt's reach, and
-the levers for it are a stronger model or denser frames.
+**"感知能力"的确切含义**：模型确实收到了帧图片，但从抽样的帧里*辨认不出*
+发生了什么（动作太细微、帧间信息丢失、物体太小），导致 english_detail 漏报
+或误报事件——描述真的错了，不是评分假象。指令能改变*怎么说*，改变不了
+*看见了什么*，所以这块差距 prompt 永远够不到，杠杆是换模型或加密帧。
 
-## 1. Locate first: which stage are you in
+## 1. 先定位：你在哪个阶段
 
-Do not guess — run one baseline evaluation and decompose the reward
-components; each weakness maps to one lever:
+不用猜，跑一次 baseline 评估、分解 reward 组件，每种短板对应一个杠杆：
 
 ```bash
 .venv/bin/python evaluate.py --name baseline --reward-version v2
-# component details in results/eval_baseline.json and the run logs
+# 组件明细在 results/eval_baseline.json 及运行日志中
 ```
 
-| Observed symptom | Bottleneck | Lever to pull | Stage |
+| 观察到的症状 | 瓶颈 | 该拉的杠杆 | 对应阶段 |
 | --- | --- | --- | --- |
-| Gaps between candidates/versions < 2×SE; no conclusion possible | Ruler | grow test, `judge_samples`, repeat passes | Stage 1 |
-| `judge_detail`/`brief`/`title` low while rule_compliance is fine | Perception | stronger multimodal model, denser frames | Stage 2 |
-| `rule_compliance` low (word caps, missing keys, gender words, meta words) | Prompt | one APO run | Stage 3 |
-| Gates (scene/courier) fire often and the frames are genuinely ambiguous | Data/labels | manual audit, align with the customer | Stage 4 |
+| 候选/版本之间的分差 < 2×SE，什么结论都下不了 | 尺子 | 扩 test、`judge_samples`、重复评估 | 阶段 1 |
+| `judge_detail`/`brief`/`title` 低，rule_compliance 不低 | 感知 | 换更强的多模态模型、加密帧 | 阶段 2 |
+| `rule_compliance` 低（字数超限、缺键、性别词、meta 词） | prompt | 跑一次 APO | 阶段 3 |
+| 硬门（scene/courier）触发率高且帧里确实有歧义 | 数据/标注 | 人工复核、与客户对齐 | 阶段 4 |
 
-Four-part evidence chain for "it is perception, not an under-tuned prompt"
-(all reproducible on your own runs):
+判断"是感知问题而不是 prompt 没调好"的四条证据链（都可以在自己的运行上
+复现）：
 
-1. **Is APO saturated?** All round-2 children below their parents, and the
-   critiques only repeating rule-compliance issues (each candidate's gradient
-   text is in `results/<run_id>/report.json`);
-2. **Cross-scale counter-evidence**: the tuned prompt improves on the v2
-   scale but the v1 scale (0.6 weight on the semantic judge) does not move →
-   the prompt improved only format/rules, not semantics;
-3. **Controlled-variable probe**: same baseline prompt, same test split, same
-   judge, only `AZURE_OPENAI_DEPLOYMENT` changed — if the score moves, it is
-   perception; if not, it is not;
-4. **Component decomposition**: the weakness sits in judge_detail
-   (perception) vs rule_compliance (prompt).
+1. **APO 是否已饱和**：第二轮子候选是否全部低于父候选、critique 是否只在
+   重复规则合规类问题（`results/<run_id>/report.json` 里有每个候选的
+   gradient 文本）；
+2. **跨刻度反证**：调优后的 prompt 在 v2 刻度提升、但 v1 刻度（0.6 权重是
+   语义 judge）不动 → prompt 改善的只是格式/规则，语义那块碰不着；
+3. **控制变量探测**：同一 baseline prompt、同一 test split、同一 judge，
+   只换 `AZURE_OPENAI_DEPLOYMENT`——分数动了就是感知，没动就不是；
+4. **组件分解**：短板落在 judge_detail（感知）还是 rule_compliance
+   （prompt）。
 
-## 2. Stage roadmap
+## 2. 阶段路线图
 
-### Stage 0 — smoke (once per environment)
+### 阶段 0 —— 冒烟（每个环境一次）
 
-Verify the loop runs; ignore scores. See
-[dataset-sizing.md](dataset-sizing.md) section 6, Stage 0.
+验证闭环能跑，不看分数。见
+[dataset-sizing.md](dataset-sizing.md) 第 6 节 Stage 0。
 
-### Stage 1 — sharpen the ruler: the main problem is measurement, not optimization
+### 阶段 1 —— 磨尺子：主要矛盾是测量，不是优化
 
-Without this step, no later change can be judged effective or not. **Note:
-this is not a re-balancing of the three splits** — train 80 / val 100 are
-already sufficient (measured calibration in
-[dataset-sizing.md](dataset-sizing.md) section 8). Only two things change:
+不先做这步，后面任何改动都无法判断有没有效。**注意：不是重新平衡三个
+split**——train 80 / val 100 已经够用（实测校准见
+[dataset-sizing.md](dataset-sizing.md) 第 8 节），只动两件事：
 
-1. **Grow test to ~100 tasks once, then freeze** (`prepare_data.py
-   --test-size 100 --freeze-test`). Side effect: all old baseline anchors are
-   invalidated; re-measure the baseline once.
-2. **Reduce single-measurement variance**: set `judge_samples: 3` in
-   `reward/v2/config.yaml`; run key comparisons 2–3 times on the same split
-   and average.
+1. **test 一次性扩到 ~100 条并冻结**（`prepare_data.py --test-size 100
+   --freeze-test`）。副作用：所有旧 baseline 锚点作废，需重测一次 baseline。
+2. **降低单次测量方差**：`reward/v2/config.yaml` 设 `judge_samples: 3`；
+   关键对比同一 split 跑 2–3 遍取平均。
 
-**Exit criterion**: paired SE on test ≤ half the effect size you need to
-resolve (effects here are ~0.03–0.04 → paired SE ≤ 0.02, i.e. ~100 tasks
-plus repeat passes).
+**退出条件**：test 上的配对 SE ≤ 你要分辨的效应量的一半（本项目效应量
+~0.03–0.04 → 需要配对 SE ≤ 0.02，即 ~100 条 + 重复评估）。
 
-### Stage 2 — swap the engine: at the current score range the main problem is perception
+### 阶段 2 —— 换引擎：当前分数段的主要矛盾是感知
 
-Confirm the gain with a controlled-variable probe before switching:
+用控制变量探测确认收益，再决定切换：
 
 ```bash
-# change only AZURE_OPENAI_DEPLOYMENT, keep everything else fixed;
-# run at least 2–3 passes and average
+# 只换 AZURE_OPENAI_DEPLOYMENT，其余全部不变；至少跑 2–3 遍取平均
 .venv/bin/python evaluate.py --name baseline_<newmodel>_v2 --reward-version v2
 ```
 
-Reading: confirmed only when the mean paired delta ≥ 2× the paired SE. Also
-inspect the component details of the worst regressions — if the new model's
-failures are verbosity/rule-type, they are prompt-fixable and Stage 3 gains
-extra headroom. To probe the ceiling, one pass with a larger tier (e.g. pro)
-serves as a reference.
+判读：配对差值的均值 ≥ 2×配对 SE 才算确认；同时查最大退化任务的组件明细
+——如果新模型的失败属于啰嗦/规则类，那是 prompt 可修复的，阶段 3 反而有
+额外空间。想探上限可单跑一次更大的模型档位（如 pro）做参照。
 
-**Exit criterion**: once confirmed, switch `AZURE_OPENAI_DEPLOYMENT` and move
-to Stage 3.
+**退出条件**：新模型确认后切换 `AZURE_OPENAI_DEPLOYMENT`，进入阶段 3。
 
-### Stage 3 — harvest the prompt dividend on the new model (once)
+### 阶段 3 —— 在新模型上收一次 prompt 红利（只收一次）
 
-A new model makes *different kinds* of mistakes, so the rule-compliance slice
-reopens. Configure per the validated conclusions: **width for diversity, no
-extra depth**:
+新模型犯的是*不同类型*的错，规则合规切片会重新出现可修复空间。配置按已
+验证的结论：**宽度换多样性、不加深**：
 
 ```bash
 .venv/bin/python apo_train.py --reward-version v2 \
   --branch-factor 4 --beam-rounds 2 --gradient-batch-size 8 \
-  --n-runners 12   # pick concurrency per performance-tuning.md on Linux
+  --n-runners 12   # Linux 上按 performance-tuning.md 选并发
 ```
 
-**Termination signal (important)**: in `report.json`, all round-2 children
-score below their parents and the critiques start repeating the same issues →
-the search is saturated, **stop**. Do not keep running prompt rounds on the
-same model — candidate gaps are typically ≤1–2 SE, which is picking coins in
-noise.
+**终止信号（重要）**：`report.json` 里第二轮子候选全部低于父候选、且
+critique 开始重复同样的问题 → 搜索已饱和，**停止**。不要在同一个模型上
+反复多轮调 prompt——候选间分差通常 ≤ 1–2 个 SE，那是在噪声里挑硬币。
 
-**Exit criterion**: tuned-vs-baseline paired gap ≥ 2×SE on the frozen test,
-or accept the current best after the termination signal fires.
+**退出条件**：在冻结 test 上确认 tuned vs baseline 的配对差距 ≥ 2×SE，
+或触发终止信号后接受当前 best。
 
-### Stage 4 — the remaining gap belongs to data/input
+### 阶段 4 —— 剩余差距归数据/输入
 
-When judge_detail is still the weakness after growing test, swapping the
-model, and one APO run:
+扩 test + 换模型 + 一次 APO 之后 judge_detail 仍是短板时：
 
-- **Measure the judge_detail ceiling first (nearly free).** Feed the
-  ground-truth `english_detail` itself to the judge as if it were the model
-  output — the score you get is the theoretical maximum for this (frames,
-  labels, judge) combination. Customer labels are typically written from the
-  *full video*, so events invisible in the sampled frames cap the score no
-  matter how strong the model is. If the ceiling is, say, 0.8, the current
-  score is much closer to the top than it looks and "low" is a scale
-  artifact; only the gap *below the ceiling* is worth chasing.
-- **Manually audit the lowest-judge_detail tasks.** `evaluate.py` saves
-  per-task components in `results/eval_<name>.json`; sort by `judge_detail`,
-  take the bottom ~10, and compare frames vs ground truth vs model output.
-  Each outcome names a different culprit: a human can see it in the frames
-  but the model missed it → perception (stronger model, Stage 2); a human
-  cannot see it in the frames either but the label says it happened → frame
-  density / label misalignment (improve the input, or align labels with the
-  customer); the output is actually fine but scored low → judge calibration
-  (back to Stage 1).
-- **Improve the input, not the prompt**: denser frame sampling, higher
-  resolution — the model cannot see what the frames don't show; validate the
-  change through the Stage-2 probe procedure.
-- **Manually audit the tasks that still fire gates**: where scene/courier are
-  genuinely ambiguous in the frames, that is a labeling/requirements question
-  to align with the customer, not a prompt problem.
+- **先测 judge_detail 的天花板（几乎零成本）**：把 ground truth 的
+  `english_detail` 自己当作"模型输出"送进 judge 打分——得到的就是
+  （帧、标注、judge）这个组合的理论上限。客户标注通常是看*完整视频*
+  写的，抽样帧里看不见的事件会封死分数上限，换多强的模型都够不到。
+  如果天花板只有 0.8，当前分数其实离顶没那么远，"低"是刻度假象；
+  只有*低于天花板*的那段缺口才值得追。
+- **人工抽查 judge_detail 最低的任务**：`evaluate.py` 已把每个任务的
+  组件明细写进 `results/eval_<name>.json`，按 `judge_detail` 排序取
+  最低的 ~10 条，人眼对照帧、ground truth 和模型输出。三种结局分别
+  指向不同的嫌疑人：人能从帧里看出来而模型没看出 → 感知问题（换更强
+  模型，回阶段 2）；人从帧里也看不出但标注说发生了 → 帧密度/标注
+  错位（改输入，或与客户对齐标注）；模型说得其实没错但分低 → judge
+  校准问题（回阶段 1）。
+- **改输入而不是改 prompt**：更密的帧采样、更高分辨率——模型看不见帧里
+  没有的东西；改完回到阶段 2 的探测流程验证。
+- **人工复核仍触发硬门的任务**：scene/courier 在帧里真有歧义的，是标注/
+  需求问题，要与客户对齐，不是 prompt 问题。
 
-## 3. Loop rules
+## 3. 循环规则
 
-- Changed the target model or the input (frame density/resolution) → return
-  to Stage 3 and harvest the prompt dividend once more;
-- Changed the reward definition or the judge model → the ruler changed;
-  return to Stage 1 and re-measure the baseline anchors;
-- Unsure at any point → go back to the locating table in section 1 and
-  decompose components before acting.
+- 换了 target 模型或输入（帧密度/分辨率）→ 回阶段 3 重收一次 prompt 红利；
+- 换了 reward 定义或 judge 模型 → 尺子变了，回阶段 1 重测 baseline 锚点；
+- 任何时候拿不准 → 回第 1 节的定位表，先分解组件再动手。
 
-Pulling the wrong lever at the wrong stage (most commonly: repeatedly tuning
-the prompt while perception-bound) only buys noise with money.
+在错的阶段拉错的杠杆（最常见：感知瓶颈期反复调 prompt）只会花钱买噪声。

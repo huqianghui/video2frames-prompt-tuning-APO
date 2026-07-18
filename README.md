@@ -1,239 +1,204 @@
-# Video2Frames Prompt Tuning (APO)
+# Video2Frames Prompt 调优（APO）
 
-**English** | [中文](README.zh.md)
+[English](README-en.md) | **中文**
 
-Tune the fixed instruction prompt of a video-surveillance frame-analysis task with
-[Agent-Lightning](https://github.com/huqianghui/agent-lightning)'s APO (Automatic
-Prompt Optimization) algorithm.
+使用 [Agent-Lightning](https://github.com/huqianghui/agent-lightning) 的 APO
+（Automatic Prompt Optimization，自动 Prompt 优化）算法，调优视频监控帧分析
+任务中固定不变的指令 prompt。
 
-The customer dataset `original_data/qwen_0318_swift_task.json` contains 5850 video analysis tasks
-(video → structured JSON with `english_detail` / `brief` / `title` / `scene_type` /
-`is_courier_action`). This project converts each video task into a **multi-frame image
-task**: the original `<video>` placeholder is removed and a frame placeholder section
-is appended after the instruction, one placeholder per frame:
+客户数据集 `original_data/qwen_0318_swift_task.json` 包含 5850 条视频分析任务
+（视频 → 结构化 JSON，字段为 `english_detail` / `brief` / `title` / `scene_type` /
+`is_courier_action`）。本项目把每条视频任务改造成**多帧图片任务**：移除原始的
+`<video>` 占位符，并在指令之后追加帧占位符段，每帧一个占位符：
 
 ```
 <frame 1 | 0s> <frame 2 | 3s> ... <frame n | 3(n-1)s>
 ```
 
-Frames were pre-extracted (roughly one frame every 3 seconds; the frame count varies
-per video) and stored in Azure Blob Storage. APO tunes **only the fixed instruction
-part** of the prompt; the frame placeholder section is rebuilt per task at runtime.
+帧已预先抽取（约每 3 秒一帧；每个视频帧数不等）并存储在 Azure Blob Storage 中。
+APO **只调优 prompt 中固定的指令部分**；帧占位符段由 agent 在运行时按任务重建。
 
-> **Important:** `original_data/qwen_0318_swift_task.json` is customer-provided data
-> and must never be committed or pushed to GitHub. The `original_data/`, `data/`,
-> `log/`, and `results/` directories are tracked as empty folders (`.gitkeep` only);
-> their contents are git-ignored because they contain or derive from customer data.
-> Copy `original_data/`, `data/`, and the repository-root `.env` to the training
-> machine separately (e.g. via scp).
+> **重要：** `original_data/qwen_0318_swift_task.json` 是客户提供的数据，
+> 绝不能 commit 或 push 到 GitHub。`original_data/`、`data/`、`log/`、`results/`
+> 四个目录只以空文件夹形式入库（仅 `.gitkeep`）；其内容因包含或派生自客户数据而被
+> git 忽略。请单独（如通过 scp）把 `original_data/`、`data/` 和仓库根目录的 `.env`
+> 拷贝到训练机器上。
 
-## Installation
+## 安装
 
-This project must run against agent-lightning **0.3.1 built from the
-[huqianghui/agent-lightning](https://github.com/huqianghui/agent-lightning) fork**
-(the PyPI 0.3.0 release is missing required functionality, and the fork carries
-additional logging/test changes). `requirements.txt` pins the fork by commit:
+本项目必须运行在**从 [huqianghui/agent-lightning](https://github.com/huqianghui/agent-lightning)
+fork 源码构建的 agent-lightning 0.3.1** 上（PyPI 的 0.3.0 版本缺少所需功能，
+且该 fork 含额外的日志与测试改动）。`requirements.txt` 已按 commit 固定该 fork：
 
 ```bash
 git clone https://github.com/huqianghui/video2frames-prompt-tuning-APO.git
 cd video2frames-prompt-tuning-APO
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -c "import agentlightning; print(agentlightning.__version__)"  # expect 0.3.1
+.venv/bin/python -c "import agentlightning; print(agentlightning.__version__)"  # 应输出 0.3.1
 ```
 
-## Configuration
+## 配置
 
-Blob storage settings are read from the repository root `.env`
-(`blob4videodatasets_connection_string`, `blob4videodatasets_container_name`,
-`blob4videodatasets_frames_folder_name`). Additionally, the following Azure OpenAI
-variables must be added to the `.env` (or exported):
+Blob 存储配置从仓库根目录的 `.env` 读取
+（`blob4videodatasets_connection_string`、`blob4videodatasets_container_name`、
+`blob4videodatasets_frames_folder_name`）。此外，还需在 `.env` 中补充（或 export）
+以下 Azure OpenAI 变量：
 
-| Variable | Purpose | Default |
+| 变量 | 用途 | 默认值 |
 | --- | --- | --- |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | required |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | required |
-| `OPENAI_API_VERSION` | Azure OpenAI API version (e.g. `2024-10-21`) | required |
-| `AZURE_OPENAI_DEPLOYMENT` | Multimodal deployment analyzed frames are sent to | `gpt-4o` |
-| `JUDGE_MODEL` | Deployment used by the LLM judge in the reward | `gpt-4.1-mini` |
-| `APO_GRADIENT_MODEL` | Deployment APO uses to critique prompts | `gpt-4.1` |
-| `APO_APPLY_EDIT_MODEL` | Deployment APO uses to rewrite prompts | `gpt-4.1-mini` |
-| `FRAMES_AS_BASE64` | Set to `true` to send frames as base64 data URIs instead of SAS URLs | unset |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | 必填 |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | 必填 |
+| `OPENAI_API_VERSION` | Azure OpenAI API 版本（如 `2024-10-21`） | 必填 |
+| `AZURE_OPENAI_DEPLOYMENT` | 接收帧图片做分析的多模态部署 | `gpt-4o` |
+| `JUDGE_MODEL` | reward 中 LLM judge 使用的部署 | `gpt-4.1-mini` |
+| `APO_GRADIENT_MODEL` | APO 用来批评 prompt 的部署 | `gpt-4.1` |
+| `APO_APPLY_EDIT_MODEL` | APO 用来改写 prompt 的部署 | `gpt-4.1-mini` |
+| `FRAMES_AS_BASE64` | 设为 `true` 时帧以 base64 data URI 发送（默认 SAS URL） | 不设置 |
 
-## Workflow
+## 工作流
 
-> **Start here:** before running anything, read
-> [doc/optimization-stages.md](doc/optimization-stages.md) to locate which
-> optimization stage you are in (measurement / model / prompt / data) and
-> which lever to pull — the commands below are the *mechanics*; that guide is
-> the *strategy*.
+> **从这里开始：** 运行任何命令之前，先读
+> [doc/optimization-stages.md](doc/optimization-stages.md)，定位自己
+> 处于哪个优化阶段（测量 / 模型 / prompt / 数据）、该拉哪个杠杆——下面的
+> 命令是*操作*，那份指南是*策略*。
 
 ```bash
-# 1. Prepare the datasets (stratified sample; resolves frame blobs from Azure).
-#    Sampling and splitting stratify jointly by (family, is_courier_action),
-#    so every split mirrors the pool's label mix; the val split is guaranteed
-#    at least --val-courier-min (default 0.15) courier positives, and each
-#    split's courier/scene_type/family distribution is logged. scene_type has
-#    no quota (distribution report only).
-#    --probe-content-filter checks every candidate against the Azure content
-#    safety filter during sampling (~3% of videos are rejected regardless of
-#    the prompt) and backfills blocked ones, so the splits reach their target
-#    sizes with tasks that are guaranteed to pass. Probe results are cached per
-#    video in data/content_filter_cache.json, so re-running the script (or
-#    probe_content_filter.py) never re-probes an already-probed video.
+# 1. 准备数据集（分层采样；从 Azure 解析帧 blob）。
+#    采样与切分按 (family, is_courier_action) 联合分层，每个 split 都还原
+#    候选池的标签比例；val split 保证 courier 正例比例不低于
+#    --val-courier-min（默认 0.15），并在日志中打印各 split 的
+#    courier/scene_type/family 分布。scene_type 不设配额（只做分布报告）。
+#    --probe-content-filter 会在采样时把每个候选视频送 Azure 内容安全过滤器
+#    探测（约 3% 的视频无论 prompt 如何都会被拒），被 block 的自动顺延补采，
+#    保证各 split 达到目标大小且全部任务可通过。探测结果按视频缓存在
+#    data/content_filter_cache.json 中，重复运行本脚本（或
+#    probe_content_filter.py）不会重复探测已探测过的视频。
 .venv/bin/python prepare_data.py --train-size 40 --val-size 24 --test-size 30 --seed 42 --probe-content-filter
 
-# 1b. (Second round) Regrow train/val while keeping the held-out test split
-#     frozen: --freeze-test leaves test.jsonl untouched and excludes its videos
-#     from resampling (--test-size is ignored). Note: same-seed frozen runs do
-#     not reproduce a previous round's train/val (the candidate pool changed).
+# 1b.（第二轮）扩大 train/val 时冻结 held-out 测试集：--freeze-test 保持
+#     test.jsonl 原样不动，并把其中的视频从重采样中排除（--test-size 被忽略）。
+#     注意：冻结模式下即使 seed 相同也不会复现上一轮的 train/val
+#     （候选池已经变化）。
 .venv/bin/python prepare_data.py --train-size 80 --val-size 100 --freeze-test --probe-content-filter
 
-# 2. (Optional) Audit existing splits against the content safety filter.
-.venv/bin/python probe_content_filter.py          # report only (data/content_filter_probe.json)
-.venv/bin/python probe_content_filter.py --apply  # report + drop blocked tasks (no backfill)
-.venv/bin/python probe_content_filter.py --from-report  # re-apply an existing report
+# 2.（可选）对已有 split 做内容安全过滤器审计。
+.venv/bin/python probe_content_filter.py          # 只出报告（data/content_filter_probe.json）
+.venv/bin/python probe_content_filter.py --apply  # 报告 + 删除被 block 的任务（不补采）
+.venv/bin/python probe_content_filter.py --from-report  # 复用已有报告重新应用
 
-# 3. Debug a single rollout with the baseline prompt.
+# 3. 用 baseline prompt 调试单条 rollout。
 .venv/bin/python frame_agent.py --limit 1
 
-# 4. Smoke-test the APO loop end to end (minimal beam, cheap).
+# 4. 端到端冒烟测试 APO 闭环（最小 beam，成本低）。
 .venv/bin/python apo_train.py --smoke
 
-# 5. Full APO run. Every run gets a timestamped run ID: the APO log goes to
-#    log/apo_<run_id>.log and all artifacts to results/<run_id>/ — best prompt
-#    (best_prompt.txt), a full optimization report (per-round candidate
-#    prompts, rewards, gradient critiques, validation scores) in report.md +
-#    report.json, a compact prompt version tree (derivation, scores, winner)
-#    in tree.md, and summary.json which records the run parameters plus a
-#    fingerprint (row count + hash) of the data/ splits used. When the best
-#    prompt beats the seed, diffs.md shows unified diffs for each step of its
-#    derivation chain (e.g. v0 → v4 → v7) plus the overall seed → best diff.
-#    Runs never overwrite each other; results/latest points at the newest run.
+# 5. 完整 APO 训练。每次运行分配一个时间戳 run ID：APO 日志写入
+#    log/apo_<run_id>.log，所有产物写入 results/<run_id>/ —— 最佳 prompt
+#    （best_prompt.txt）、完整优化报告（每轮候选 prompt、reward、gradient
+#    批评、验证分数，report.md + report.json）、精简的 prompt 版本树
+#    （派生关系、分数、胜出版本，tree.md），以及记录运行参数和 data/ 各
+#    split 指纹（行数 + 哈希）的 summary.json。若 best prompt 赢过种子，
+#    diffs.md 会给出其派生链每一步的 unified diff（如 v0 → v4 → v7）以及
+#    种子 → best 的整体 diff。多次运行互不覆盖；results/latest 始终指向
+#    最新一次运行。
 .venv/bin/python apo_train.py
 
-# 5b. (Optional) Re-generate the report from the log of any past run.
+# 5b.（可选）从任意一次历史运行的日志重新生成报告。
 .venv/bin/python generate_report.py --log log/apo_<run_id>.log --output-dir results/<run_id>
 
-# 5c. (Optional) Build only the version tree from an existing report.md — no
-#     log needed (e.g. a report.md copied from another machine). Beam-survival
-#     markers are unavailable in this mode.
+# 5c.（可选）只用已有的 report.md 生成版本树——不需要日志（例如从其他机器
+#     拷贝来的 report.md）。此模式下没有 beam 存活标记。
 .venv/bin/python generate_report.py --from-report results/latest/report.md
 
-# 6. Compare baseline vs tuned prompt on the held-out test split.
+# 6. 在 held-out 测试集上对比 baseline 与调优后的 prompt。
 .venv/bin/python evaluate.py --name baseline
 .venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned
 
-# 7. (Optional) Compare reward versions: score the same prompt under v1 and v2,
-#    then join the results task-by-task.
+# 7.（可选）对比 reward 版本：同一个 prompt 分别用 v1、v2 打分，
+#    再按任务逐条 join 两份结果。
 .venv/bin/python evaluate.py --name baseline_v1 --reward-version v1
 .venv/bin/python evaluate.py --name baseline_v2 --reward-version v2
 .venv/bin/python compare_rewards.py results/eval_baseline_v1.json results/eval_baseline_v2.json
 ```
 
-AgentOps SaaS upload is **disabled by default** (spans are still traced
-locally, which is all APO needs). Pass `--enable-agentops-service` to
-`apo_train.py` only if you want session replays on app.agentops.ai.
+AgentOps SaaS 上传**默认关闭**（span 仍在本地采集，APO 所需的数据不受影响）。
+只有想在 app.agentops.ai 上查看 session replay 时，才给 `apo_train.py` 加
+`--enable-agentops-service`。
 
-The default split sizes (40/24/30) are a pilot configuration. See
-[doc/dataset-sizing.md](doc/dataset-sizing.md) for how to estimate the split
-sizes your target effect size actually requires, and for a stage-by-stage
-playbook for growing the datasets and the beam hyperparameters together.
+默认的 split 大小（40/24/30）是试点配置。如何根据目标效应量估算真正需要的
+split 大小，以及数据集与 beam 超参数同步阶梯式扩容的操作手册，见
+[doc/dataset-sizing.md](doc/dataset-sizing.md)。
 
-## Test Split: Role and Usage Conditions
+## Test split 的作用与使用条件
 
-The three splits play different roles in APO; **test never participates in any
-optimization decision**:
+三个 split 在 APO 中的分工不同，**test 不参与任何优化决策**：
 
-| Split | Role | Consumer |
+| Split | 作用 | 谁在消费 |
 | --- | --- | --- |
-| train | Rollouts for the critic's textual gradients (`--gradient-batch-size` per step) | APO gradient phase |
-| val | Scores each candidate prompt and decides beam survival | APO selection phase |
-| test | Held-out final acceptance; answers "how much better is tuned vs baseline" | `evaluate.py` (manually triggered) |
+| train | 供 critic 计算文本梯度（`--gradient-batch-size` 条 rollout/次） | APO 梯度阶段 |
+| val | 给每轮候选 prompt 打分、决定 beam 去留 | APO 选择阶段 |
+| test | held-out 最终验收，只回答"调优后比 baseline 好多少" | `evaluate.py`（人工触发） |
 
-**Preconditions (check every item before running test):**
+**使用条件（跑 test 前逐条确认）：**
 
-1. **APO actually produced a prompt that beats the seed** — check
-   `results/<run_id>/report.md` or the end of the log: if the best prompt is
-   still v0 (`Best prompt not updated`), running test is pointless; fix the
-   data/evaluation setup and rerun APO first.
-2. **Verify the `best_prompt.txt` you evaluate came from a full run, not a
-   smoke run** — each run (smoke included) writes its own `results/<run_id>/`
-   directory, and `results/latest` points at the most recent one, which may be
-   a smoke run. Check the beam parameters in that run's `summary.json` (smoke
-   is 1/1/1) to confirm the artifacts belong to the full run.
-3. **Test must stay unseen** — never probe test scores repeatedly during
-   optimization; all tuning and prompt selection uses val only. Every decision
-   made against test discounts the credibility of the final number. Run it once
-   after an optimization round has converged.
+1. **APO 真正产出了赢过种子的 prompt**——查看 `results/<run_id>/report.md` 或日志末尾：若 best prompt 仍是 v0（`Best prompt not updated`），跑 test 没有意义，先回去改数据/评估配置重跑 APO。
+2. **确认所评估的 `best_prompt.txt` 来自正式运行而非 smoke**——每次运行（包括 smoke）都会写入独立的 `results/<run_id>/` 目录，而 `results/latest` 指向最近一次运行，它可能是 smoke。检查该运行目录下 `summary.json` 里的 beam 参数（smoke 为 1/1/1），确认拿到的是正式运行的产物。
+3. **test 必须保持"未见过"**——优化迭代期间不要反复在 test 上试分数；调参、选 prompt 一律只看 val。test 每被用于一次决策，最终数字的可信度就打一次折扣。一轮优化收敛后跑一次即可。
 
-**Steps and outputs:**
+**步骤与产出：**
 
 ```bash
 .venv/bin/python evaluate.py --name baseline                                       # baseline prompt
-.venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned  # tuned prompt
+.venv/bin/python evaluate.py --prompt results/latest/best_prompt.txt --name tuned  # 调优后 prompt
 ```
 
-The two runs write `results/eval_baseline.json` and `results/eval_tuned.json`
-(mean_reward plus per-task details); comparing `mean_reward` is the final
-verdict. If the gap is smaller than the evaluation noise observed on val
-(about ±0.015 under the pilot configuration), do not claim an improvement —
-grow the splits per [doc/dataset-sizing.md](doc/dataset-sizing.md) and
-re-verify first.
+两次运行分别写入 `results/eval_baseline.json` 与 `results/eval_tuned.json`（含 mean_reward 和 per-task 明细），对比 `mean_reward` 即最终结论。若差距小于 val 上观测到的评估噪声（试点配置下约 ±0.015），不要宣称有提升——先按 [doc/dataset-sizing.md](doc/dataset-sizing.md) 扩大 split 再验证。
 
 ## Reward
 
-The reward is the part of this project that evolves most, so it lives in a
-standalone versioned package: `reward/` with one subfolder per version
-(`reward/v1/`, `reward/v2/`, ...), each containing its implementation
-(`reward.py`), its tunable parameters (`config.yaml`), and optionally its own
-APO meta-prompt overrides (`*.poml`). Every version implements the same
-`RewardFunction` interface (`reward/base.py`), so the agent, APO training, and
-evaluation are version-agnostic.
+reward 是本项目迭代最频繁的部分，因此被抽取成独立的版本化包：`reward/`
+下每个版本一个子目录（`reward/v1/`、`reward/v2/`、……），各自包含实现
+（`reward.py`）、可调参数（`config.yaml`），以及可选的 APO 元 prompt 覆盖
+（`*.poml`）。所有版本实现同一个 `RewardFunction` 接口（`reward/base.py`），
+agent、APO 训练与评估对版本完全无感。
 
-**Selecting a version:** pass `--reward-version vN` to `frame_agent.py`,
-`apo_train.py`, or `evaluate.py`, or set the `REWARD_VERSION` environment
-variable (explicit flag > env var > default `v1`). `apo_train.py` pins the
-resolved version in the environment so forked runner processes score with the
-same reward, and records it (plus the full reward config) in the run's
-`summary.json`.
+**版本选择：** 给 `frame_agent.py` / `apo_train.py` / `evaluate.py` 传
+`--reward-version vN`，或设置环境变量 `REWARD_VERSION`（显式参数 > 环境
+变量 > 默认 `v1`）。`apo_train.py` 会把解析后的版本固定到环境变量，保证
+fork 出的 runner 进程用同一个 reward 打分，并把版本号与完整 reward 配置记录
+到该次运行的 `summary.json`。
 
-**v1 (default)** — hybrid reward in `[0, 1]`:
+**v1（默认）**——`[0, 1]` 区间的混合 reward：
 
-- `0.2` × exact match of `scene_type`
-- `0.2` × exact match of `is_courier_action`
-- `0.6` × LLM-judge semantic score over `english_detail` / `brief` / `title`
+- `0.2` × `scene_type` 精确匹配
+- `0.2` × `is_courier_action` 精确匹配
+- `0.6` × LLM judge 对 `english_detail` / `brief` / `title` 的语义评分
 
-**v2 (upgraded hybrid reward)** — per-field judges, mechanical rule
-compliance, and multiplicative gates (redesigned following the SkillOpt-04
-analysis article):
+**v2（hybrid reward 升级版）**——分字段 judge + 机械规则合规 + 乘性硬门
+（按 SkillOpt-04 分析文章重设计）：
 
-- Soft score: `0.45 × judge_detail + 0.20 × judge_brief + 0.10 × judge_title +
-  0.25 × rule_compliance`, where `rule_compliance` is the mean of deterministic
-  0/1 checks derived from the baseline prompt's hard style rules (exact 5 JSON
-  keys, word limits, "person" instead of gendered words, no camera/frame/
-  timestamp mentions, Non-Notable trigger consistency).
-- Hard gates multiply the soft score: scene error × 0.5, courier false positive
-  × 0.3, courier false **negative** × 0.2 (missing a real courier is the most
-  expensive mistake; the asymmetry is a customer assumption to confirm).
-- Optional judge-noise reduction: set `judge_samples: 3` (and a non-zero
-  `judge_temperature`) in `reward/v2/config.yaml` to take the median of
-  repeated judge calls.
-- `reward/v2/text_gradient_video2frames.poml` describes the v2 objective to
-  the APO optimizer (each version owns its text-gradient meta-prompt; see
-  "APO Meta-Prompts" below).
+- 软分：`0.45 × judge_detail + 0.20 × judge_brief + 0.10 × judge_title +
+  0.25 × rule_compliance`，其中 `rule_compliance` 是一组确定性 0/1 检查的
+  均值，检查项直接来自 baseline prompt 的硬性风格规则（恰好 5 个 JSON 键、
+  字数上限、用 "person" 而非性别词、不提 camera/frame/timestamp、
+  Non-Notable 触发前缀一致性）。
+- 硬门以乘法作用于软分：场景判错 × 0.5，courier 误报 × 0.3，courier
+  **漏报** × 0.2（漏掉真实快递员是最贵的错误；这一不对称假设需与客户确认）。
+- 可选的 judge 降噪：在 `reward/v2/config.yaml` 中设 `judge_samples: 3`
+  （并把 `judge_temperature` 调为非零）即对多次 judge 调用取中位数。
+- `reward/v2/text_gradient_video2frames.poml` 向 APO 优化器描述 v2 的目标
+  函数（每个版本自带自己的 text-gradient 元 prompt；见下文 "APO 元 Prompt"）。
 
-Both versions score invalid-JSON output as `0`. Requests rejected by the Azure
-OpenAI content safety filter also score `0` — the rejection depends only on
-the input frames, so it is identical for every candidate prompt. A probe of
-the default 94-task sample found ~3% blocked (not only `ucf_crime`; some
-`Charades` videos trigger it too). Sample with `prepare_data.py
---probe-content-filter` to exclude blocked videos up front (the reward-0
-fallback still covers anything that slips through), or audit existing splits
-with `probe_content_filter.py`.
+两个版本对非法 JSON 输出都打 `0` 分。被 Azure OpenAI 内容安全过滤器拒绝的
+请求同样得 `0` 分——拒绝只取决于输入帧，对每个候选 prompt 都完全相同。对
+默认 94 条样本的探测发现约 3% 被 block（不只 `ucf_crime`；部分 `Charades`
+视频也会触发）。用 `prepare_data.py --probe-content-filter` 采样可预先排除
+被 block 的视频（reward=0 的兜底仍覆盖漏网的情况），或用
+`probe_content_filter.py` 审计已有 split。
 
-**Comparing versions:** evaluate the same prompt under both rewards with
-distinct `--name` labels, then join the per-task results:
+**版本对比：** 用不同的 `--name` 标签把同一个 prompt 分别在两个 reward 下
+评估，再按任务 join 两份结果：
 
 ```bash
 .venv/bin/python evaluate.py --name baseline_v1 --reward-version v1
@@ -241,116 +206,103 @@ distinct `--name` labels, then join the per-task results:
 .venv/bin/python compare_rewards.py results/eval_baseline_v1.json results/eval_baseline_v2.json
 ```
 
-`compare_rewards.py` prints a per-task delta table plus per-family and overall
-means, and writes the joined result next to the inputs. Measured results
-(baseline calibration, interpretation, and the 2×2 end-to-end comparison plan)
-are logged in [doc/reward-comparison.md](doc/reward-comparison.md).
+`compare_rewards.py` 打印逐任务 delta 表、按 family 与整体的均值，并把
+join 后的结果写到输入文件旁。实测结果（baseline 刻度校准、解读与 2×2
+端到端对比计划）记录在
+[doc/reward-comparison.md](doc/reward-comparison.md)。
 
-**Adding a new version:** copy an existing folder to `reward/v3/`, adjust
-`config.yaml` and `reward.py` (keep the `RewardFunction` interface and the
-`get_reward()` factory), and update its `text_gradient_*.poml` to state the new
-objective (declared in `apo_meta_prompts`). It is picked up automatically by
-`--reward-version v3`.
+**新增版本：** 把现有目录复制为 `reward/v3/`，改 `config.yaml` 和
+`reward.py`（保持 `RewardFunction` 接口和 `get_reward()` 工厂），并把版本
+目录里的 `text_gradient_*.poml` 改写成新目标函数（在 `apo_meta_prompts`
+中声明）——`--reward-version v3` 即可自动使用。
 
-See [doc/reward-design.md](doc/reward-design.md) for the v1 design rationale
-and the assumptions that should be confirmed with the customer before a
-large-scale run; the v2 design follows the SkillOpt-04 article
-([SkillOpt 系列 04](https://github.com/huqianghui/mindforge/blob/main/Notes/AI/SkillOpt/SkillOpt%E7%B3%BB%E5%88%9704%EF%BC%9AAPO%C3%97SkillOpt%E8%81%94%E5%90%88%E5%B1%95%E6%9C%9B%E2%80%94%E2%80%94%E5%85%88%E6%8E%A2%E7%B4%A2%E5%90%8E%E7%B2%BE%E4%BF%AE%E7%9A%84%E4%B8%A4%E6%AE%B5%E5%BC%8F%E7%AE%A1%E9%81%93%E4%B8%8E%E9%80%89%E5%9E%8B%E7%AE%97%E8%B4%A6%E6%96%B9%E6%B3%95.md)).
+v1 的设计理由、大规模训练前需要与客户确认的假设，见
+[doc/reward-design.md](doc/reward-design.md)；v2 的设计遵循 SkillOpt-04
+文章（[SkillOpt 系列 04](https://github.com/huqianghui/mindforge/blob/main/Notes/AI/SkillOpt/SkillOpt%E7%B3%BB%E5%88%9704%EF%BC%9AAPO%C3%97SkillOpt%E8%81%94%E5%90%88%E5%B1%95%E6%9C%9B%E2%80%94%E2%80%94%E5%85%88%E6%8E%A2%E7%B4%A2%E5%90%8E%E7%B2%BE%E4%BF%AE%E7%9A%84%E4%B8%A4%E6%AE%B5%E5%BC%8F%E7%AE%A1%E9%81%93%E4%B8%8E%E9%80%89%E5%9E%8B%E7%AE%97%E8%B4%A6%E6%96%B9%E6%B3%95.md)）。
 
-## APO Meta-Prompts
+## APO 元 Prompt
 
-APO itself is driven by two meta-prompts: a *text gradient* template that
-critiques the current prompt from rollout traces, and an *apply edit* template
-that rewrites it. Both are declared per reward version in the
-`apo_meta_prompts` section of `reward/<version>/config.yaml` (`null` = use the
-shared default in `prompts/`, a filename = use the customized file in the
-version folder), and they split by reward coupling:
+APO 本身由两个元 prompt 驱动：*text gradient* 模板根据 rollout trace 批评当前
+prompt，*apply edit* 模板据此改写。两者都在 reward 版本的 `config.yaml` 的
+`apo_meta_prompts` 段显式声明（`null` = 用 `prompts/` 下的共享默认文件，
+写文件名 = 用版本目录下的客户化文件），并按与 reward 的耦合程度划分归属：
 
-- **text gradient** states the optimization objective (the reward formula), so
-  it is **owned by the reward version** — every version must declare one
-  (`reward/v1/text_gradient_video2frames.poml` describes the 0.2/0.2/0.6
-  objective, `reward/v2/...` the per-field/gated one); `apo_train.py` refuses
-  to run a version without it.
-- **apply edit** only encodes reward-independent invariants (5-field JSON
-  contract, no frame/`<video>` placeholders), so the shared
-  `prompts/apply_edit_video2frames.poml` is the default for all versions.
+- **text gradient** 描述优化目标（即 reward 公式），因此**归 reward 版本
+  所有**——每个版本必须声明一份（`reward/v1/text_gradient_video2frames.poml`
+  描述 0.2/0.2/0.6 目标，`reward/v2/...` 描述分字段 + 硬门目标）；版本
+  没有声明时 `apo_train.py` 直接报错拒跑。
+- **apply edit** 只编码与 reward 无关的不变量（5 字段 JSON 契约、禁止加入
+  帧/`<video>` 占位符），因此共享的 `prompts/apply_edit_video2frames.poml`
+  是所有版本的默认文件。
 
-Pass `--default-poml` to fall back to the framework's built-in templates. See
-[doc/apo-poml-customization.md](doc/apo-poml-customization.md) for what the two
-files do and the exact changes vs the defaults.
+加 `--default-poml` 可回退到框架内置模板。这两个文件的作用与相对默认版的
+具体改动，见 [doc/apo-poml-customization.md](doc/apo-poml-customization.md)。
 
-## Execution Strategy & Platform Notes
+## 执行策略与平台说明
 
-`apo_train.py` picks the execution strategy automatically (`execution_strategy()`):
+`apo_train.py` 会自动选择执行策略（`execution_strategy()`）：
 
-- **Linux with Python ≤ 3.13** (multiprocessing start method `fork`, the primary
-  target platform): the default client/server strategy with parallel runner
-  processes — `--n-runners 4` by default.
-- **macOS / Windows** (start method `spawn`, or `forkserver` on Linux Python 3.14+):
-  falls back to serial shared-memory mode
-  (`strategy={"type": "shm", "n_runners": 1, "main_thread": "algorithm"}`) with a
-  warning — fine for smoke tests and small runs.
+- **Linux + Python ≤ 3.13**（multiprocessing 启动方式为 `fork`，主要目标平台）：
+  使用默认的 client/server 策略，并行 runner 进程——默认 `--n-runners 4`。
+- **macOS / Windows**（启动方式为 `spawn`，或 Linux Python 3.14+ 的 `forkserver`）：
+  回退到串行共享内存模式
+  （`strategy={"type": "shm", "n_runners": 1, "main_thread": "algorithm"}`）
+  并打印警告——冒烟测试和小规模运行没有问题。
 
-The fallback exists because the current agent-lightning runtime has two
-platform-related limitations:
+设置回退是因为当前的 agent-lightning 运行时有两个平台相关的限制：
 
-1. **The default client/server strategy fails on macOS and Windows.**
-   `ClientServerExecutionStrategy._spawn_runners` (`agentlightning/execution/client_server.py`)
-   starts runner processes via `multiprocessing.get_context()` — the *platform default*
-   start method — and passes a locally defined closure (`_runner_sync`) as the process
-   entry point. On Linux (Python ≤ 3.13) the default is `fork`, which never pickles the
-   entry point, so everything works. On macOS and Windows the default is `spawn`, which
-   must pickle it and fails with
-   `AttributeError: Can't pickle local object 'ClientServerExecutionStrategy._spawn_runners.<locals>._runner_sync'`.
-   Windows has no `fork`, so there is no workaround there.
+1. **默认 client/server 策略在 macOS 和 Windows 上会失败。**
+   `ClientServerExecutionStrategy._spawn_runners`（`agentlightning/execution/client_server.py`）
+   通过 `multiprocessing.get_context()`（即*平台默认*启动方式）启动 runner 进程，
+   并把一个局部定义的闭包（`_runner_sync`）作为进程入口。Linux（Python ≤ 3.13）
+   默认是 `fork`，从不 pickle 入口函数，一切正常。macOS 和 Windows 默认是 `spawn`，
+   必须 pickle，于是报
+   `AttributeError: Can't pickle local object 'ClientServerExecutionStrategy._spawn_runners.<locals>._runner_sync'`。
+   Windows 没有 `fork`，无任何变通办法。
 
-2. **Shared-memory mode cannot run parallel runners.**
-   The shm strategy runs runners as threads inside one process, but the tracer registers
-   a *process-global* active tracer (`set_active_tracer` in `agentlightning/tracer/base.py`
-   raises `An active tracer is already set`). With 2+ runner threads, every overlapping
-   rollout fails, so `n_runners` must stay at 1.
+2. **共享内存模式无法并行 runner。**
+   shm 策略在单进程内以线程运行 runner，但 tracer 注册的是*进程全局*的活动 tracer
+   （`agentlightning/tracer/base.py` 中的 `set_active_tracer` 会抛出
+   `An active tracer is already set`）。2 个以上 runner 线程时，所有时间上重叠的
+   rollout 都会失败，所以 `n_runners` 必须保持 1。
 
-**Practical consequence:** for large-scale runs use **Linux with Python ≤ 3.13**,
-where `apo_train.py` parallelizes automatically (tune with `--n-runners`). On
-macOS/Windows the same command still runs correctly, just serially.
+**实际结论：** 大规模运行请使用 **Linux + Python ≤ 3.13**，`apo_train.py` 会自动
+并行（用 `--n-runners` 调节）。macOS/Windows 上同一条命令也能正确运行，只是串行。
 
-See [doc/performance-tuning.md](doc/performance-tuning.md) for what the beam
-hyperparameters (`--beam-rounds` / `--beam-width` / `--branch-factor`) mean and
-how to tune them, the concurrency model, formulas to estimate run time and
-Azure OpenAI quota needs, and how to pick `--n-runners` / batch sizes (e.g.
-`--n-runners 12 --gradient-batch-size 8` on a large VM).
+beam 超参数（`--beam-rounds` / `--beam-width` / `--branch-factor`）的含义与
+调参方法、并发模型、运行时长与 Azure OpenAI quota 的估算公式、`--n-runners`
+和批大小的选择方法（如大 VM 上用 `--n-runners 12 --gradient-batch-size 8`），
+见 [doc/performance-tuning.md](doc/performance-tuning.md)。
 
-> **Caveat:** Python 3.14 changes the default start method on Linux to `forkserver`
-> (which also pickles the entry point), so those environments auto-fall back to the
-> serial mode too. Pin Python ≤ 3.13 for parallel runs until this is fixed upstream
-> (microsoft/agent-lightning: use a module-level function as the process entry point,
-> and a thread-local/contextvar for the active tracer).
+> **注意：** Python 3.14 把 Linux 的默认启动方式改为 `forkserver`（同样需要
+> pickle 入口函数），因此那些环境也会自动回退到串行模式。在上游修复之前
+> （microsoft/agent-lightning：进程入口改用模块级函数、活动 tracer 改用
+> thread-local/contextvar），并行运行请锁定 Python ≤ 3.13。
 
-## Dashboard (Optional)
+## Dashboard（可选）
 
-On Linux runs you may see this in the log:
+在 Linux 上运行时，日志中可能出现：
 
 ```
 ERROR    Dashboard directory not found at .../agentlightning/dashboard
 ```
 
-**This error is harmless** — the dashboard is an optional web UI for browsing
-the store (rollouts, spans, traces), and training works fine without it. It
-appears because this project installs agent-lightning from source and the
-frontend has not been built. To enable the UI, build it once
-(`cd <agent-lightning>/dashboard && npm install && npm run build`) and restart.
-See [doc/dashboard.md](doc/dashboard.md) for details, including why the
-macOS/Windows shm fallback has no dashboard at all.
+**这个报错无害**——dashboard 是一个可选的 Web 界面，用于浏览 store 中的数据
+（rollouts、spans、traces），没有它训练照常进行。报错的原因是本项目从源码安装
+agent-lightning，而前端尚未构建。如需启用 UI，构建一次即可
+（`cd <agent-lightning>/dashboard && npm install && npm run build`）然后重启。
+详见 [doc/dashboard.md](doc/dashboard.md)，其中也解释了为什么
+macOS/Windows 的 shm 回退模式下根本没有 dashboard。
 
-## Smoke Test
+## 冒烟测试
 
-Offline (no network, no credentials):
+离线（无网络、无凭据）：
 
 ```bash
 .venv/bin/pytest tests/ -v
 ```
 
-Online (requires blob access + Azure OpenAI):
+在线（需要 blob 访问 + Azure OpenAI）：
 
 ```bash
 .venv/bin/python prepare_data.py --train-size 2 --val-size 2 --test-size 2
@@ -358,31 +310,31 @@ Online (requires blob access + Azure OpenAI):
 .venv/bin/python apo_train.py --smoke
 ```
 
-## Included Files
+## 文件清单
 
-| File | Role |
+| 文件 | 作用 |
 | --- | --- |
-| `original_data/qwen_0318_swift_task.json` | Customer dataset (pandas `to_json` dump). **Never commit.** |
-| `blob_utils.py` | Azure Blob helpers: env loading, video→frame-prefix mapping, frame listing, SAS URLs. |
-| `prepare_data.py` | Converts the pandas dump into `data/{train,val,test}.jsonl` and `data/baseline_prompt.txt`. Stratifies jointly by (family, `is_courier_action`) with a val courier-positive floor (`--val-courier-min`); `--freeze-test` regrows train/val without touching the test split; `--probe-content-filter` skips videos blocked by the content safety filter. |
-| `probe_content_filter.py` | Probes tasks against the Azure content safety filter; caches results per video in `data/content_filter_cache.json`, reports the blocked ratio per split, and optionally removes blocked tasks. |
-| `frame_agent.py` | `@rollout` frame-analysis agent, frame placeholder builder, debug CLI; scoring is delegated to the versioned `reward/` package. |
-| `reward/` | Versioned reward package: `base.py` (shared `RewardFunction` interface, JSON parsing, judge helpers), `v1/` (hybrid 0.2/0.2/0.6 reward), `v2/` (upgraded hybrid reward: per-field judges + rule compliance + gates). Each version has `reward.py` + `config.yaml` + its own text-gradient POML. Select via `--reward-version` / `REWARD_VERSION`. |
-| `compare_rewards.py` | Joins two `evaluate.py` result files task-by-task (e.g. the same prompt under reward v1 vs v2) and prints per-task deltas plus per-family/overall means. |
-| `apo_train.py` | APO training entry point; each run writes `log/apo_<run_id>.log` and `results/<run_id>/` (`best_prompt.txt`, `summary.json` with a data fingerprint, run report), and repoints `results/latest`. Meta-prompts come from the reward version's `apo_meta_prompts` config (`--default-poml` reverts to the framework templates). |
-| `prompts/apply_edit_video2frames.poml` | Shared reward-agnostic APO apply-edit meta-prompt (5-field JSON contract, frame-placeholder ban). The reward-specific text-gradient meta-prompt lives in each `reward/<version>/`. |
-| `generate_report.py` | Parses an APO run log (`--log log/apo_<run_id>.log`) into `report.md` / `report.json` (candidate prompts, rewards, gradient critiques per round), `tree.md` (compact version tree: derivation, scores, beam survival, winner), and — when the best prompt beats the seed — `diffs.md` (per-step derivation diffs plus overall seed → best) under `--output-dir`. |
-| `evaluate.py` | Evaluates a prompt file on a dataset split; writes `results/eval_<name>.json` (records the reward version; `--reward-version` selects it). |
-| `doc/optimization-stages.md` / `doc/optimization-stages.zh.md` | **Start-here strategy guide**: the model/data/prompt levers, how to locate your current optimization stage from reward components, and the stage-by-stage roadmap with exit/termination criteria (English/Chinese). |
-| `doc/dataset-sizing.md` / `doc/dataset-sizing.zh.md` | Guide for sizing the splits (noise/SE math), staged scaling, and beam-hyperparameter tuning playbook (English/Chinese). |
-| `doc/reward-design.md` / `doc/reward-design.zh.md` | Reward definition, design rationale, and the open questions to confirm with the customer (English/Chinese). |
-| `doc/reward-comparison.md` / `doc/reward-comparison.zh.md` | Measured v1-vs-v2 comparison log: baseline scale calibration on the test split, interpretation, and the 2×2 end-to-end comparison playbook (English/Chinese). |
-| `doc/apo-poml-customization.md` / `doc/apo-poml-customization.zh.md` | What the APO meta-prompts do, why they are customized, and the exact changes vs the framework defaults (English/Chinese). |
-| `doc/dashboard.md` / `doc/dashboard.zh.md` | What the Agent-Lightning dashboard is, why the "Dashboard directory not found" error is harmless, and how to build/access the UI (English/Chinese). |
-| `doc/performance-tuning.md` / `doc/performance-tuning.zh.md` | Beam hyperparameters (rounds/width/branch-factor) with a tuning decision table, concurrency model, run-time/quota formulas, and how to choose `--n-runners` and batch sizes (English/Chinese). |
-| `README.md` / `README.zh.md` | This document (English/Chinese). |
-| `tests/` | Offline unit tests (fixtures only, no customer data, no network). |
-| `conftest.py` | Makes project modules importable from `tests/`. |
-| `requirements.txt` | Installs agent-lightning 0.3.1 from source (`-e ..[apo]`) plus project deps. |
-| `pyrightconfig.json` | Points pyright at the project virtualenv. |
-| `.gitignore` | Keeps customer data, generated datasets, logs, results, and env files out of git (folders kept via `.gitkeep`). |
+| `original_data/qwen_0318_swift_task.json` | 客户数据集（pandas `to_json` 导出）。**绝不入库。** |
+| `blob_utils.py` | Azure Blob 工具：环境加载、视频→帧前缀映射、帧列举、SAS URL。 |
+| `prepare_data.py` | 把 pandas 导出转换为 `data/{train,val,test}.jsonl` 和 `data/baseline_prompt.txt`。按 (family, `is_courier_action`) 联合分层，val 有 courier 正例比例下限（`--val-courier-min`）；`--freeze-test` 在不动 test split 的前提下重建 train/val；`--probe-content-filter` 跳过被内容安全过滤器 block 的视频。 |
+| `probe_content_filter.py` | 把任务送内容安全过滤器探测；结果按视频缓存在 `data/content_filter_cache.json`，按 split 报告 block 比例，可选删除被 block 的任务。 |
+| `frame_agent.py` | `@rollout` 帧分析 agent、帧占位符构建、调试 CLI；打分委托给版本化的 `reward/` 包。 |
+| `reward/` | 版本化 reward 包：`base.py`（共享 `RewardFunction` 接口、JSON 解析、judge 工具），`v1/`（0.2/0.2/0.6 混合 reward），`v2/`（分字段 judge + 规则合规 + 硬门）。每个版本有 `reward.py` + `config.yaml` + 自己的 text-gradient POML。用 `--reward-version` / `REWARD_VERSION` 选择。 |
+| `compare_rewards.py` | 按任务 join 两份 `evaluate.py` 结果（如同一个 prompt 在 reward v1 与 v2 下的得分），打印逐任务 delta 与按 family/整体的均值。 |
+| `apo_train.py` | APO 训练入口；每次运行写 `log/apo_<run_id>.log` 和 `results/<run_id>/`（`best_prompt.txt`、带数据指纹的 `summary.json`、运行报告），并更新 `results/latest` 指向。元 prompt 按 reward 版本的 `apo_meta_prompts` 配置解析（`--default-poml` 回退框架模板）。 |
+| `prompts/apply_edit_video2frames.poml` | 共享的、与 reward 无关的 APO apply-edit 元 prompt（5 字段 JSON 契约、禁止帧占位符）。reward 相关的 text-gradient 元 prompt 在各 `reward/<version>/` 目录下。 |
+| `generate_report.py` | 把 APO 运行日志（`--log log/apo_<run_id>.log`）解析为 `report.md` / `report.json`（每轮候选 prompt、reward、gradient 批评）、`tree.md`（精简版本树：派生关系、分数、beam 存活、胜出版本），以及（best prompt 赢过种子时）`diffs.md`（派生链每步 diff + 种子 → best 整体 diff），写入 `--output-dir`。 |
+| `evaluate.py` | 在指定数据集 split 上评估一个 prompt 文件；写 `results/eval_<name>.json`（记录 reward 版本；用 `--reward-version` 选择）。 |
+| `doc/en-us/optimization-stages.md` / `doc/optimization-stages.md` | **入门策略指南**：模型/数据/prompt 三个杠杆的定位、如何从 reward 组件判断当前所处的优化阶段，以及逐阶段路线图与退出/终止条件（英/中）。 |
+| `doc/en-us/dataset-sizing.md` / `doc/dataset-sizing.md` | 数据集规模选择指南（噪声/SE 计算）、阶梯式扩容与 beam 超参调优手册（英/中）。 |
+| `doc/en-us/reward-design.md` / `doc/reward-design.md` | Reward 定义、设计理由与待客户确认的问题清单（英/中）。 |
+| `doc/en-us/reward-comparison.md` / `doc/reward-comparison.md` | v1 vs v2 实测对比记录：test split 上的 baseline 刻度校准、结果解读，以及 2×2 端到端对比操作手册（英/中）。 |
+| `doc/en-us/apo-poml-customization.md` / `doc/apo-poml-customization.md` | APO 元 prompt 的作用、定制原因与相对框架默认版的具体改动（英/中）。 |
+| `doc/en-us/dashboard.md` / `doc/dashboard.md` | Agent-Lightning dashboard 是什么、为何 "Dashboard directory not found" 报错无害、如何构建与访问 UI（英/中）。 |
+| `doc/en-us/performance-tuning.md` / `doc/performance-tuning.md` | Beam 超参数（rounds/width/branch-factor）的意义与调参决策表、并发模型、运行时长/quota 估算公式、`--n-runners` 与批大小的选择方法（英/中）。 |
+| `README-en.md` / `README.md` | 本文档（英/中）。 |
+| `tests/` | 离线单元测试（仅 fixture，无客户数据、无网络）。 |
+| `conftest.py` | 让 `tests/` 可以 import 项目模块。 |
+| `requirements.txt` | 从源码安装 agent-lightning 0.3.1（`-e ..[apo]`）及项目依赖。 |
+| `pyrightconfig.json` | 把 pyright 指向项目 virtualenv。 |
+| `.gitignore` | 让客户数据、生成数据集、日志、结果和 env 文件不入 git（文件夹通过 `.gitkeep` 保留）。 |

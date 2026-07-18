@@ -1,177 +1,144 @@
-# Reward Design and Open Questions for the Customer
+# Reward 设计与待客户确认的问题
 
-**English** | [中文](reward-design.zh.md)
+[English](en-us/reward-design.md) | **中文**
 
-The reward function is the optimization target: APO rewrites the prompt in
-whatever direction scores higher. If the reward encodes the wrong priorities,
-APO will optimize the wrong thing — precisely. This document records how the
-current reward is defined, why, which parts are assumptions that only the
-customer can confirm, and how to run that conversation before a large-scale
-training run.
+reward 函数就是优化目标：APO 会朝 reward 更高的方向改写 prompt。如果 reward
+编码了错误的优先级，APO 就会**精确地**优化错误的目标。本文记录当前 reward 的
+定义、设计理由、其中哪些是只有客户才能确认的假设，以及在大规模训练之前如何
+与客户展开这场对话。
 
-> **Versioning note:** this document describes **reward v1**, the original
-> hybrid reward. The reward now lives in the versioned `reward/` package
-> (select with `--reward-version` / `REWARD_VERSION`); v1 is the default and
-> stays byte-equivalent to the original implementation so historical runs
-> remain comparable. **Reward v2** (`reward/v2/`) upgrades the hybrid design
-> per the SkillOpt-04 analysis article — per-field judges, deterministic rule
-> compliance, and multiplicative gates for scene/courier errors; several of
-> the open questions below (per-field judging, asymmetric courier costs) are
-> implemented there as configurable assumptions to confirm. See the README's
-> "Reward" section for the v2 formula, version selection, and the
-> `compare_rewards.py` comparison workflow.
+> **版本说明：** 本文描述的是 **reward v1**（最初的混合 reward）。reward 现已
+> 抽取为版本化的 `reward/` 包（用 `--reward-version` / `REWARD_VERSION`
+> 选择）；v1 是默认版本，与原实现逐字节等价，保证历史运行可比。
+> **Reward v2**（`reward/v2/`）按 SkillOpt-04 分析文章对混合设计做了升级——
+> 分字段 judge、确定性规则合规、场景/快递错误的乘性硬门；下面若干待确认问题
+> （按字段打分、快递代价不对称）在 v2 中已实现为可配置的假设。v2 公式、版本
+> 选择方式与 `compare_rewards.py` 对比流程见 README 的 "Reward" 一节。
 
-## 1. Current definition (v1)
+## 1. 当前定义（v1）
 
-Implemented in `reward/v1/` (weights and judge prompt in `config.yaml`,
-scoring in `reward.py`):
+实现在 `reward/v1/`（权重与 judge prompt 在 `config.yaml`，打分逻辑在
+`reward.py`）：
 
 ```
-reward = 0.2 × exact match of scene_type          (case-insensitive)
-       + 0.2 × exact match of is_courier_action   (tolerates "true"/"false" strings)
-       + 0.6 × LLM-judge semantic score over english_detail / brief / title
+reward = 0.2 × scene_type 精确匹配          （不区分大小写）
+       + 0.2 × is_courier_action 精确匹配   （容忍 "true"/"false" 字符串）
+       + 0.6 × LLM judge 对 english_detail / brief / title 的语义评分
 ```
 
-Two hard zero rules:
+两条硬性归零规则：
 
-- Output that is not a valid JSON object → `0`.
-- Request rejected by the Azure content safety filter → `0` (the rejection
-  depends only on the input frames, identical for every candidate prompt).
+- 输出不是合法 JSON 对象 → `0` 分。
+- 请求被 Azure 内容安全过滤器拒绝 → `0` 分（拒绝只取决于输入帧，对每个候选
+  prompt 完全相同）。
 
-The judge (`JUDGE_MODEL`, default `gpt-4.1-mini`, `temperature=0`, structured
-output with `reason` + `score`) is instructed to check whether the generated
-text "describes the same subjects and actions" as the ground truth, wording may
-differ, be critical, partial credit allowed. It returns **one combined 0–1
-score** for all three text fields.
+judge（`JUDGE_MODEL`，默认 `gpt-4.1-mini`，`temperature=0`，结构化输出
+`reason` + `score`）的指令是：判断生成文本与 ground truth 是否"描述相同的主体
+和动作"，措辞可以不同，严格打分、允许部分得分。它对三个文本字段**合并输出一个
+0–1 分**。
 
-## 2. Why it is designed this way
+## 2. 为什么这么设计
 
-1. **Split by field nature.** Of the five output fields, `scene_type`
-   (indoor/outdoor) and `is_courier_action` (bool) are objectively checkable —
-   exact match is free, noise-free, and unambiguous. The three free-text fields
-   can never match exactly, so semantic comparison by an LLM judge is the only
-   practical grader.
-2. **APO needs a continuous signal.** With exact matches alone the reward would
-   take only five discrete values; the gradient model would have almost nothing
-   to critique. The judge's partial credit distinguishes "slightly off
-   description" from "completely wrong", which is what the text-gradient step
-   feeds on.
-3. **Weights follow content share.** The three text fields are the bulk of the
-   output (and the part a prompt can influence most), hence `0.6`; the two
-   classification fields get `0.2` each.
-4. **The zero rules remove non-prompt noise.** Invalid JSON means the format
-   contract is broken (downstream cannot consume the output — punish hard).
-   Content-filter rejections are independent of the candidate prompt, so
-   scoring them 0 (and excluding those videos at sampling time via the probe
-   cache) keeps them from polluting comparisons.
+1. **按字段性质分而治之。** 5 个输出字段中，`scene_type`（indoor/outdoor）和
+   `is_courier_action`（bool）可客观判定——精确匹配零成本、零噪声、无歧义。
+   三个自由文本字段不可能精确匹配，LLM judge 语义比对是唯一可行的评分方式。
+2. **APO 需要连续的信号。** 只用精确匹配的话 reward 只有 5 个离散取值，梯度
+   模型几乎无从批评。judge 的部分得分让"描述略有偏差"与"完全错误"可区分，
+   这正是文本梯度步骤赖以工作的信息。
+3. **权重跟随内容占比。** 三个文本字段是输出的主体（也是 prompt 最能影响的
+   部分），给 `0.6`；两个分类字段各 `0.2`。
+4. **归零规则排除与 prompt 无关的噪声。** 非法 JSON 意味着格式契约被破坏
+   （下游无法消费输出——重罚）。内容过滤器的拒绝与候选 prompt 无关，计 0 分
+   （并通过探针缓存在采样阶段就排除这些视频）可避免污染对比。
 
-## 3. What only the customer can answer
+## 3. 只有客户能回答的问题
 
-These are assumptions baked into the reward. Getting them wrong means APO
-optimizes a precisely wrong target, so confirm them **before** the large run:
+以下是内嵌在 reward 里的假设。假设错了，APO 就在精确地优化错误目标，所以要在
+大规模训练**之前**确认：
 
-| # | Question | Why it matters | If the answer differs |
+| # | 问题 | 为什么重要 | 如果答案不同 |
 | --- | --- | --- | --- |
-| 1 | Is `is_courier_action` the business-critical signal (this looks like a courier/delivery detection product)? Are false positives and false negatives equally bad? | At weight 0.2 a prompt that fixes courier detection gains little reward; APO will prioritize text quality instead. Misclassification costs are usually asymmetric. | Raise `COURIER_WEIGHT`; replace symmetric exact match with asymmetric scoring (e.g. missed courier costs more than a false alarm). |
-| 2 | Which text field is actually consumed downstream — `brief` (user-facing?), `english_detail` (search/archive?), `title`? | The judge currently emits one combined score; a prompt that improves the important field while degrading an unimportant one scores flat. | Split the judge into per-field scores with separate weights. |
-| 3 | How was the ground truth produced — human annotation or model-generated (the dataset name suggests SFT distillation)? Known quality issues? | The judge grades *against the GT*. Noisy GT both caps the achievable score and can steer tuning toward reproducing GT artifacts. | Clean or re-annotate a subset for val/test; or instruct the judge to tolerate specific GT quirks. |
-| 4 | What improvement is worth shipping (e.g. +0.05 average reward, or +X pp courier accuracy)? | This is the effect size `δ` in [dataset-sizing.md](dataset-sizing.md) — it determines how large val/test must be and when to stop tuning. | Resize the splits with the sizing formula before the run. |
-| 5 | Is downstream parsing strict JSON, or tolerant (e.g. strips markdown fences)? | We currently score any non-JSON output 0 — the harshest possible penalty. | Relax the parser / partial credit for recoverable outputs. |
-| 6 | Can the customer hand-score 10–20 sample outputs? | Calibrates the LLM judge. If judge scores do not correlate with human judgment, the judge rubric must be fixed *before* tuning — it is the examiner of the whole system. | Iterate on the judge prompt / model until correlation is acceptable. |
+| 1 | `is_courier_action` 是否是业务核心信号（这看起来像快递/配送检测产品）？误报和漏报的代价是否相同？ | 权重 0.2 意味着修好快递检测的 prompt 收益很小，APO 会转而优先文本质量。误分类代价通常是不对称的。 | 提高 `COURIER_WEIGHT`；把对称精确匹配换成非对称打分（如漏检快递员比误报代价更高）。 |
+| 2 | 下游实际消费的是哪个文本字段——`brief`（展示给用户？）、`english_detail`（检索/存档？）还是 `title`？ | judge 目前只出一个合并分；一个改善了关键字段、但劣化了次要字段的 prompt 得分不变。 | 把 judge 拆成按字段打分、分别加权。 |
+| 3 | ground truth 是怎么产生的——人工标注还是模型生成（数据集名暗示 SFT 蒸馏）？有无已知质量问题？ | judge 是*对照 GT* 打分的。GT 有噪声既压低可达上限，也可能把调优引向复现 GT 的毛病。 | 对 val/test 的子集做清洗或重标；或在 judge 指令里明确容忍特定的 GT 缺陷。 |
+| 4 | 多大的提升值得上线（如平均 reward +0.05，或快递准确率 +X 个百分点）？ | 这就是 [dataset-sizing.md](dataset-sizing.md) 里的效应量 `δ`——决定 val/test 要多大、调优何时可以停。 | 训练前用规模公式重新确定 split 大小。 |
+| 5 | 下游解析是严格 JSON，还是有容错（如剥 markdown 代码块）？ | 目前任何非 JSON 输出都记 0——最严厉的惩罚。 | 放宽解析 / 对可恢复的输出给部分分。 |
+| 6 | 客户能否人工打分 10–20 条样例输出？ | 用于校准 LLM judge。如果 judge 分与人工判断不相关，必须*先*修 judge 评分标准再调优——judge 是整个系统的考官。 | 迭代 judge 的 prompt / 模型直到相关性可接受。 |
 
-Questions 1–4 should be settled before spending on a full run; 5–6 are cheap to
-check in parallel.
+问题 1–4 应在花钱跑完整训练之前敲定；5–6 便宜，可并行核对。
 
-## 4. Suggested next steps
+## 4. 建议的下一步
 
-1. **Send the customer a short brief** (this document works): the reward
-   formula, the six questions above, plus 2–3 concrete scored examples from
-   `results/eval_baseline.json` so the discussion is grounded in real outputs
-   rather than abstractions.
-2. **Run the pilot in parallel** (Stage 1 of
-   [dataset-sizing.md](dataset-sizing.md), default 40/24/30 splits) — it
-   measures reward noise σ and produces the example outputs for step 1, and
-   nothing in it is wasted even if the weights change later.
-3. **Fold the answers back in.** Weight changes are three lines in
-   `reward/v1/config.yaml` (`scene_weight` / `courier_weight` /
-   `judge_weight`); per-field judging and asymmetric courier scoring are
-   already implemented in `reward/v2/` (weights and gate ratios in
-   `reward/v2/config.yaml`), with unit tests in `tests/test_reward.py`.
-4. **Only then run the full APO ladder** (Stage 2+). Changing the reward after
-   a big run means paying for the run again — the reward conversation is the
-   cheapest insurance in the whole project.
+1. **给客户发一份简报**（本文档即可用）：reward 公式、上面 6 个问题，外加
+   2–3 条来自 `results/eval_baseline.json` 的真实打分样例，让讨论落在真实输出
+   上而不是抽象概念上。
+2. **并行跑试点**（[dataset-sizing.md](dataset-sizing.md) 的 Stage 1，
+   默认 40/24/30）——它测出 reward 噪声 σ，也为第 1 步产出样例；即使之后权重
+   变更，这一步也不浪费。
+3. **把答案折回实现。** 权重变更只是 `reward/v1/config.yaml` 里的三行
+   （`scene_weight` / `courier_weight` / `judge_weight`）；按字段打分与
+   非对称快递打分已在 `reward/v2/` 实现（权重与硬门比例在
+   `reward/v2/config.yaml`），配套单测在 `tests/test_reward.py`。
+4. **然后才跑完整的 APO 阶梯**（Stage 2+）。大规模训练之后再改 reward 意味着
+   重新付一遍训练成本——reward 这场对话是全项目最便宜的保险。
 
-## 5. Why v2 gates are multiplicative (design rationale)
+## 5. v2 为什么用乘法硬门（设计理由）
 
-Reward v2 pulls the scene/courier errors out of the weighted sum and applies
-them as multiplicative gates on the soft score (`scene_error: ×0.5`,
-`courier_false_positive: ×0.3`, `courier_false_negative: ×0.2`). Three
-independent reasons, recorded here because each answers a natural objection.
+Reward v2 把 scene/courier 错误从加权和里拿出来，改成对软分的乘法门
+（`scene_error: ×0.5`、`courier_false_positive: ×0.3`、
+`courier_false_negative: ×0.2`）。三个相互独立的理由，各自回应一个自然的
+质疑，在此记录。
 
-### 5.1 Structure, not weight: additive errors have a fixed price
+### 5.1 问题在结构不在权重：加法之下错误有"固定标价"
 
-Under an additive weight the cost of a wrong classification is a constant —
-the weight itself — regardless of how good the rest of the output is. With
-v1's 0.2 courier weight, perfect prose + wrong courier flag still scores 0.8;
-raising the weight only raises the price, it never removes the trade — there
-is always a region where "good text + wrong call" outscores "plain text +
-right call" (and a higher classification weight dilutes the semantic signal
-APO needs for text improvements). Multiplicative gates change the structure:
+加法权重下，判错的代价是一个常数（权重本身），与输出其他部分的好坏无关。
+v1 的 courier 权重 0.2：满分文笔 + 判错快递员照样拿 0.8；把权重调大也只是
+抬高标价，永远消不掉这笔交易——总存在"文笔好 + 判断错"超过"文笔平庸 +
+判断对"的区间（而且分类权重越大，语义信号被稀释得越厉害，APO 反而没动力
+改进文本）。乘法门改变的是结构：
 
-| Soft score | Additive (weight 0.2) | Multiplicative (×0.3) |
+| 软分 | 加法（权重 0.2） | 乘法（×0.3） |
 | --- | --- | --- |
-| 0.9 (strong prose) | 0.9 − 0.2 = 0.7 | 0.9 × 0.3 = **0.27** |
-| 0.5 (plain prose) | 0.5 − 0.2 = 0.3 | 0.5 × 0.3 = 0.15 |
+| 0.9（文笔很好） | 0.9 − 0.2 = 0.7 | 0.9 × 0.3 = **0.27** |
+| 0.5（文笔平庸） | 0.5 − 0.2 = 0.3 | 0.5 × 0.3 = 0.15 |
 
-Two properties fall out: (a) **ordering** — a gated output (≤ 0.3) almost
-never outscores an ungated one with decent text, so "getting the call right"
-becomes a precondition for the high-score region rather than an optional
-bonus, which is exactly what beam selection should see; (b) **confidently
-wrong costs more** — a fluent, detailed but wrong description loses more
-absolute score (0.9 → 0.27) than a vague wrong one (0.5 → 0.15), matching
-the business reality that convincing errors are the dangerous ones.
+由此得到两个性质：（a）**排序**——触发门的输出（≤0.3）几乎不可能超过没触发
+门、文笔尚可的输出，"判断对"从可选加分项变成进入高分区的前提条件，这正是
+beam 选择应该看到的排序；（b）**写得越自信、错得越贵**——流畅、细节丰富但
+结论错误的描述（0.9 → 0.27）比含糊的错误描述（0.5 → 0.15）损失更多绝对分，
+符合"有说服力的错误才最危险"的业务现实。
 
-Why a multiplier instead of zero: reward 0 destroys information — the critic
-cannot distinguish "invalid JSON" from "great text, wrong scene", and within
-the gated group better text should still rank higher so optimization pressure
-survives on both axes. Hard zero is reserved for genuinely information-free
-outputs (invalid JSON, content-filter rejections).
+为什么乘系数而不是直接归零：0 分会毁掉信息——critic 分不清"JSON 都没写对"
+和"描述很好只是场景判错"，而且门内更好的文本仍应排得更高，才能在两个轴上
+都保留优化压力。硬性归零只留给真正无信息的输出（非法 JSON、内容过滤器
+拒绝）。
 
-### 5.2 Class imbalance: rare positives are statistically invisible under addition
+### 5.2 类别不平衡：加法之下稀少的正例在统计上不可见
 
-Courier positives are a small fraction of the data (hence the
-`--val-courier-min 0.15` sampling floor). At val = 100 with ~15 positives and
-an additive weight of 0.2: the ~85 negatives are trivially correct (answer
-`false` and collect the weight), so the mean-reward difference between a
-prompt that misses *every* courier and one that catches *all* of them is only
-0.15 × 0.2 = **0.03** — the same order as the val SE (≈ 0.012), borderline
-invisible to beam selection. The multiplicative gate raises the per-task
-penalty: one missed courier drops that task ≈ 0.56 (e.g. 0.70 → 0.14), so the
-same all-miss vs all-catch contrast becomes 0.15 × 0.56 ≈ **0.084** — about
-7 SE, clearly visible. The project therefore fights imbalance on two legs:
-the sampling floor guarantees the *count* of positives in the split, and the
-gate guarantees each one carries enough *effect size* to register in the
-mean. The harshest multiplier on false negatives (×0.2) follows the same
-logic — positives are scarce, so each miss must be expensive.
+courier 正例在数据中占比很小（所以采样才有 `--val-courier-min 0.15` 的
+下限）。val = 100、约 15 条正例、加法权重 0.2 时：约 85 条负例答 `false`
+就白拿权重（多数类闭眼全对），于是"漏掉全部快递员"与"全部认出"两个 prompt
+的均值差只有 0.15 × 0.2 = **0.03**——与 val 的 SE（≈0.012）同量级，beam
+选择基本看不见。乘法门抬高了单任务代价：漏报一条真快递员，该任务掉约
+0.56 分（如 0.70 → 0.14），同样的全漏 vs 全对对比变成 0.15 × 0.56 ≈
+**0.084**——约 7 个 SE，清晰可见。所以本项目用两条腿一起治不平衡：采样
+下限保证 split 里正例的**数量**，乘法门保证每条正例有足够的**单任务
+效应量**能在均值里显形。FN 给最重的 ×0.2 也是同一逻辑——正例本来稀缺，
+每一条漏报都必须"贵"到均值能感觉到。
 
-### 5.3 Gates are partly perception-bound — and still earn their place
+### 5.3 gate 有一半是感知问题——但仍然值得存在
 
-Whether the model *can see* the courier in the frames is perception, which no
-prompt edit reaches. The gates are still justified because the reward serves
-two roles:
+模型*能不能从帧里看见*快递员是感知问题，prompt 改不动。gate 依然成立，
+因为 reward 同时扮演两个角色：
 
-- **As the ruler** (model comparison, final acceptance): the gate is exactly
-  what makes a model that detects couriers better *score* better. A reward
-  without the business-critical error would rank models wrong. Gate firing
-  rates per run are now in `component_stats` of `results/eval_<name>.json` —
-  if the rate drops when only the deployment changes, that is the perception
-  evidence.
-- **As the optimization target**: the decision splits into *seeing* (
-  perception, prompt-unreachable) and *deciding* (how uncertain evidence is
-  converted into true/false — a threshold the prompt *can* move, e.g. by
-  defining "courier action" precisely or stating "when unsure, prefer true;
-  misses cost most"). The FN < FP asymmetry is the signal telling APO which
-  direction to push that threshold.
-- **As a Stage-4 probe**: tasks that keep firing gates despite a strong model
-  are the ones to audit with the customer for genuine frame ambiguity (see
-  [optimization-stages.md](optimization-stages.md)).
+- **作为尺子**（模型对比、最终验收）：正是 gate 让"更会认快递员的模型"
+  *得分更高*。不含业务关键错误的 reward 会把模型排错序。每次评估的 gate
+  触发率现已写入 `results/eval_<name>.json` 的 `component_stats`——只换
+  deployment 触发率就下降，就是感知问题的直接证据。
+- **作为优化目标**：这个判断拆成*看见*（感知，prompt 够不到）和*决策*
+  （把不确定的证据换成 true/false 的阈值——prompt 能推动，比如精确定义
+  "courier action"、写明"拿不准时倾向 true，漏报代价最高"）。FN < FP 的
+  不对称正是告诉 APO 往哪个方向推这个阈值的信号。
+- **作为阶段 4 的探测器**：换了强模型仍反复触发 gate 的任务，就是要拿去
+  与客户对齐、确认帧里是否真有歧义的样本（见
+  [optimization-stages.md](optimization-stages.md)）。
